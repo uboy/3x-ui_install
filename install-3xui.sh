@@ -369,7 +369,7 @@ validate_sshd_root_login_no() {
   local context="$1"
   local label=""
 
-  if /usr/sbin/sshd -T | grep -qi '^permitrootlogin no$'; then
+  if /usr/sbin/sshd -T | grep -i '^permitrootlogin no$' >/dev/null; then
     return 0
   fi
 
@@ -724,7 +724,7 @@ load_install_state
 
 resolve_var_from_env_state_default DOMAIN ""
 resolve_var_from_env_state_default EMAIL ""
-resolve_var_from_env_state_default OPEN_TCP_PORTS ""
+resolve_var_from_env_state_default OPEN_TCP_PORTS "443"
 resolve_var_from_env_state_default OPEN_UDP_PORTS ""
 resolve_var_from_env_state_default NEW_USER ""
 resolve_var_from_env_state_default NEW_PASS ""
@@ -802,12 +802,8 @@ if [[ -t 0 ]]; then
   save_state_checkpoint
 
   while :; do
-    if [[ -n "$OPEN_TCP_PORTS" ]]; then
-      read -r -p "Inbound TCP ports (space/comma separated) [$OPEN_TCP_PORTS]: " input
-      OPEN_TCP_PORTS="${input:-$OPEN_TCP_PORTS}"
-    else
-      read -r -p "Inbound TCP ports (space/comma separated): " OPEN_TCP_PORTS
-    fi
+    read -r -p "Inbound TCP ports (space/comma separated) [${OPEN_TCP_PORTS}] (default 443, Enter keeps shown value): " input
+    OPEN_TCP_PORTS="${input:-$OPEN_TCP_PORTS}"
     OPEN_TCP_PORTS="${OPEN_TCP_PORTS//,/ }"
     [[ -n "${OPEN_TCP_PORTS//[[:space:]]/}" ]] || {
       printf 'At least one TCP port is required.\n' >&2
