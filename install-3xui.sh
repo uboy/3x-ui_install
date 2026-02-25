@@ -482,8 +482,9 @@ panel_apply_credentials() {
 
   if panel_apply_credentials_api_first; then
     return 0
+  else
+    rc=$?
   fi
-  rc=$?
   if (( rc != 1 && rc != 2 )); then
     die "Panel credentials flow failed unexpectedly (rc=${rc})."
   fi
@@ -500,8 +501,9 @@ panel_apply_credentials() {
 
   if panel_apply_credentials_api_first; then
     return 0
+  else
+    rc=$?
   fi
-  rc=$?
   if (( rc == 2 )); then
     die "Panel credentials recovery action completed but API login still failed (mode=${PANEL_RESET_MODE}, action=${PANEL_RESET_ACTION})."
   fi
