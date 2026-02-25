@@ -127,7 +127,7 @@ resolve_var_from_env_state_default() {
   local key="$1"
   local default_value="$2"
 
-  if [[ -n "${!key+x}" ]]; then
+  if [[ -n "${!key+x}" && -n "${!key-}" ]]; then
     return 0
   fi
   if [[ -n "${STATE_VALUES[$key]+x}" ]]; then
@@ -368,6 +368,7 @@ debug_permit_root_login_sources() {
 
 validate_sshd_root_login_no() {
   local context="$1"
+  local failure_mode="${2:-die}"
   local label=""
 
   if /usr/sbin/sshd -T | grep -i '^permitrootlogin no$' >/dev/null; then
@@ -377,6 +378,9 @@ validate_sshd_root_login_no() {
   [[ -n "$context" ]] && label=" (${context})"
   log "SSH hardening validation failed${label}; collecting PermitRootLogin debug details"
   debug_permit_root_login_sources
+  if [[ "$failure_mode" == "return" ]]; then
+    return 1
+  fi
   die "SSH hardening validation failed${label}: PermitRootLogin is not 'no'."
 }
 
@@ -386,6 +390,139 @@ ensure_sshd_dropin_include() {
   fi
   log "Adding missing Include /etc/ssh/sshd_config.d/*.conf to /etc/ssh/sshd_config"
   printf '\nInclude /etc/ssh/sshd_config.d/*.conf\n' >> /etc/ssh/sshd_config
+}
+
+ssh_unit_exists() {
+  local unit="$1"
+  local state=""
+  state="$(systemctl show -p LoadState --value "$unit" 2>/dev/null || true)"
+  [[ -n "$state" && "$state" != "not-found" ]]
+}
+
+detect_ssh_unit() {
+  local unit=""
+  for unit in ssh.service sshd.service; do
+    if systemctl is-active --quiet "$unit"; then
+      printf '%s\n' "$unit"
+      return 0
+    fi
+  done
+  for unit in ssh.service sshd.service; do
+    if ssh_unit_exists "$unit"; then
+      printf '%s\n' "$unit"
+      return 0
+    fi
+  done
+  return 1
+}
+
+backup_ssh_config_for_rollback() {
+  local backup_dir=""
+  [[ -n "${SSH_CONFIG_BACKUP_DIR:-}" ]] && [[ -d "$SSH_CONFIG_BACKUP_DIR" ]] && return 0
+
+  backup_dir="$(mktemp -d /tmp/3xui-sshcfg.XXXXXX)"
+  install -m 600 /etc/ssh/sshd_config "${backup_dir}/sshd_config"
+  if [[ -f "$SSH_HARDENING_CONF_PATH" ]]; then
+    install -m 600 "$SSH_HARDENING_CONF_PATH" "${backup_dir}/hardening.conf"
+    printf 'present\n' > "${backup_dir}/hardening.state"
+  else
+    printf 'absent\n' > "${backup_dir}/hardening.state"
+  fi
+  chmod 600 "${backup_dir}/hardening.state" 2>/dev/null || true
+  SSH_CONFIG_BACKUP_DIR="$backup_dir"
+}
+
+restore_ssh_config_from_backup() {
+  local hardening_state=""
+  [[ -n "${SSH_CONFIG_BACKUP_DIR:-}" ]] && [[ -d "$SSH_CONFIG_BACKUP_DIR" ]] || return 1
+  [[ -f "${SSH_CONFIG_BACKUP_DIR}/sshd_config" ]] || return 1
+
+  install -m 600 "${SSH_CONFIG_BACKUP_DIR}/sshd_config" /etc/ssh/sshd_config || return 1
+  if [[ -f "${SSH_CONFIG_BACKUP_DIR}/hardening.state" ]]; then
+    hardening_state="$(cat "${SSH_CONFIG_BACKUP_DIR}/hardening.state" 2>/dev/null || true)"
+  fi
+
+  if [[ "$hardening_state" == "present" ]]; then
+    install -m 600 "${SSH_CONFIG_BACKUP_DIR}/hardening.conf" "$SSH_HARDENING_CONF_PATH" || return 1
+  else
+    rm -f "$SSH_HARDENING_CONF_PATH"
+  fi
+
+  /usr/sbin/sshd -t || return 1
+  return 0
+}
+
+cleanup_ssh_config_backup() {
+  if [[ -n "${SSH_CONFIG_BACKUP_DIR:-}" ]] && [[ -d "$SSH_CONFIG_BACKUP_DIR" ]]; then
+    rm -rf "$SSH_CONFIG_BACKUP_DIR"
+  fi
+  SSH_CONFIG_BACKUP_DIR=""
+}
+
+precheck_ssh_firewall_before_apply() {
+  local ufw_status=""
+  ufw_status="$(ufw status 2>/dev/null || true)"
+  printf '%s\n' "$ufw_status" | grep -Eq '^Status:[[:space:]]+active$' || return 1
+  printf '%s\n' "$ufw_status" | grep -Eq "^[[:space:]]*${SSH_PORT}/tcp([[:space:]]+\\(v6\\))?[[:space:]]+ALLOW([[:space:]]|$)"
+}
+
+wait_for_local_ssh_listener() {
+  local max_attempts="${1:-20}"
+  local sleep_seconds="${2:-1}"
+  local attempt=0
+  local listener_rows=0
+
+  for (( attempt = 1; attempt <= max_attempts; attempt++ )); do
+    listener_rows="$(ss -ltn "( sport = :${SSH_PORT} )" 2>/dev/null | awk 'NR>1 {count++} END {print count+0}')"
+    if [[ "$listener_rows" =~ ^[0-9]+$ ]] && (( listener_rows > 0 )); then
+      return 0
+    fi
+    sleep "$sleep_seconds"
+  done
+
+  return 1
+}
+
+probe_public_ssh_port() {
+  local probe_ip="$1"
+  local probe_timeout="${2:-5}"
+
+  [[ -n "$probe_ip" ]] || return 1
+  if ! command -v timeout >/dev/null 2>&1; then
+    return 1
+  fi
+
+  timeout "$probe_timeout" bash -c "exec 3<>/dev/tcp/${probe_ip}/${SSH_PORT}" >/dev/null 2>&1
+}
+
+rollback_ssh_apply_or_die() {
+  local reason="$1"
+  local rollback_failed=0
+
+  log "Final SSH apply failed: ${reason}"
+  log "Attempting SSH rollback using saved SSH config backup"
+  if ! restore_ssh_config_from_backup; then
+    log "SSH rollback failed: could not restore SSH config files"
+    rollback_failed=1
+  fi
+  if [[ -n "$SSH_ORIGINAL_UNIT" ]]; then
+    if ! systemctl restart "$SSH_ORIGINAL_UNIT"; then
+      log "SSH rollback failed: could not restart ${SSH_ORIGINAL_UNIT}"
+      rollback_failed=1
+    fi
+  else
+    log "SSH rollback failed: original SSH unit is unknown"
+    rollback_failed=1
+  fi
+
+  if (( rollback_failed != 0 )); then
+    ROOT_SSH_DISABLED_CONFIRMED="rollback-failed"
+    die "${reason}. Rollback failed; manual SSH recovery is required."
+  fi
+
+  cleanup_ssh_config_backup
+  ROOT_SSH_DISABLED_CONFIRMED="rollback-restored"
+  die "${reason}. Restored previous SSH config and restarted ${SSH_ORIGINAL_UNIT}."
 }
 
 panel_login() {
@@ -850,6 +987,7 @@ resolve_var_from_env_state_default PANEL_RESET_RESULT "not-attempted"
 resolve_var_from_env_state_default PANEL_FACTORY_BACKUP_PATH ""
 resolve_var_from_env_state_default ENABLE_PANEL_2FA "false"
 resolve_var_from_env_state_default AUTO_CREATE_INBOUND "false"
+resolve_var_from_env_state_default STRICT_SSH_EXTERNAL_CHECK "true"
 # Default inbound port is 443 unless INBOUND_PORT is explicitly provided.
 resolve_var_from_env_state_default INBOUND_PORT "443"
 resolve_var_from_env_state_default INBOUND_REMARK ""
@@ -879,6 +1017,11 @@ PANEL_RESET_RESULT="not-attempted"
 PANEL_FACTORY_BACKUP_PATH=""
 INBOUND_STATUS="not-requested"
 INBOUND_ID=""
+ROOT_SSH_DISABLED_CONFIRMED="not-applied"
+SSH_HARDENING_CONF_PATH="/etc/ssh/sshd_config.d/00-3xui-hardening.conf"
+SSH_CONFIG_BACKUP_DIR=""
+SSH_ORIGINAL_UNIT=""
+SSH_EXTERNAL_PROBE_STATUS="not-run"
 
 USER_EXPLICIT=false
 if [[ -n "$NEW_USER" ]]; then
@@ -1018,35 +1161,6 @@ if [[ -t 0 ]]; then
   save_state_checkpoint
 
   while :; do
-    read -r -p "Current panel username for API fallback [${PANEL_CURRENT_USER}]: " input
-    PANEL_CURRENT_USER="${input:-$PANEL_CURRENT_USER}"
-    [[ -n "$PANEL_CURRENT_USER" ]] && break
-    printf 'Current panel username must not be empty.\n' >&2
-  done
-  save_state_checkpoint
-
-  if [[ -n "$PANEL_CURRENT_PASS" ]]; then
-    read -r -s -p "Current panel password for API fallback (blank keeps existing value): " input
-    if [[ -n "$input" ]]; then
-      PANEL_CURRENT_PASS="$input"
-    fi
-  else
-    read -r -s -p "Current panel password for API fallback (optional): " PANEL_CURRENT_PASS
-  fi
-  printf '\n'
-  save_state_checkpoint
-
-  if [[ -n "$PANEL_CURRENT_2FA_CODE" ]]; then
-    read -r -p "Current panel 2FA code for API fallback (optional, blank keeps existing value): " input
-    if [[ -n "$input" ]]; then
-      PANEL_CURRENT_2FA_CODE="$input"
-    fi
-  else
-    read -r -p "Current panel 2FA code for API fallback (optional): " PANEL_CURRENT_2FA_CODE
-  fi
-  save_state_checkpoint
-
-  while :; do
     read -r -p "Panel credential recovery mode [${PANEL_RESET_MODE}] (none/2fa/factory): " input
     PANEL_RESET_MODE="${input:-$PANEL_RESET_MODE}"
     PANEL_RESET_MODE="$(printf '%s' "$PANEL_RESET_MODE" | tr '[:upper:]' '[:lower:]')"
@@ -1068,15 +1182,71 @@ if [[ -t 0 ]]; then
   done
   save_state_checkpoint
 
+  if [[ "$PANEL_RESET_MODE" != "factory" ]]; then
+    while :; do
+      read -r -p "Current panel username for API fallback [${PANEL_CURRENT_USER}]: " input
+      PANEL_CURRENT_USER="${input:-$PANEL_CURRENT_USER}"
+      [[ -n "$PANEL_CURRENT_USER" ]] && break
+      printf 'Current panel username must not be empty.\n' >&2
+    done
+    save_state_checkpoint
+
+    if [[ -n "$PANEL_CURRENT_PASS" ]]; then
+      read -r -s -p "Current panel password for API fallback (blank keeps existing value): " input
+      if [[ -n "$input" ]]; then
+        PANEL_CURRENT_PASS="$input"
+      fi
+    else
+      read -r -s -p "Current panel password for API fallback (optional): " PANEL_CURRENT_PASS
+    fi
+    printf '\n'
+    save_state_checkpoint
+
+    if [[ -n "$PANEL_CURRENT_2FA_CODE" ]]; then
+      read -r -p "Current panel 2FA code for API fallback (optional, blank keeps existing value): " input
+      if [[ -n "$input" ]]; then
+        PANEL_CURRENT_2FA_CODE="$input"
+      fi
+    else
+      read -r -p "Current panel 2FA code for API fallback (optional): " PANEL_CURRENT_2FA_CODE
+    fi
+    save_state_checkpoint
+  else
+    log "Panel recovery mode is factory; skipping current panel credential prompts."
+    PANEL_CURRENT_USER="admin"
+    PANEL_CURRENT_PASS="admin"
+    PANEL_CURRENT_2FA_CODE=""
+    save_state_checkpoint
+  fi
+
   while :; do
-    read -r -p "Panel admin username (optional, blank = auto-generate): " input
-    PANEL_ADMIN_USER="$input"
+    if [[ -n "$PANEL_ADMIN_USER" ]]; then
+      read -r -p "New panel admin username [${PANEL_ADMIN_USER}] (Enter keeps, type 'auto' for auto-generate): " input
+      if [[ -z "$input" ]]; then
+        break
+      fi
+      if [[ "${input,,}" == "auto" ]]; then
+        PANEL_ADMIN_USER=""
+        break
+      fi
+      PANEL_ADMIN_USER="$input"
+    else
+      read -r -p "New panel admin username (optional, blank = auto-generate): " input
+      PANEL_ADMIN_USER="$input"
+    fi
     [[ -z "$PANEL_ADMIN_USER" || "$PANEL_ADMIN_USER" =~ ^[A-Za-z0-9_.@-]{3,64}$ ]] && break
-    printf 'Panel admin username must match ^[A-Za-z0-9_.@-]{3,64}$.\n' >&2
+    printf "New panel admin username must match ^[A-Za-z0-9_.@-]{3,64}$.\n" >&2
   done
   save_state_checkpoint
 
-  read -r -s -p "Panel admin password (optional, blank = auto-generate): " PANEL_ADMIN_PASS
+  if [[ -n "$PANEL_ADMIN_PASS" ]]; then
+    read -r -s -p "New panel admin password (blank keeps existing value): " input
+    if [[ -n "$input" ]]; then
+      PANEL_ADMIN_PASS="$input"
+    fi
+  else
+    read -r -s -p "New panel admin password (optional, blank = auto-generate): " PANEL_ADMIN_PASS
+  fi
   printf '\n'
   save_state_checkpoint
 
@@ -1149,6 +1319,7 @@ OPEN_UDP_PORTS="${OPEN_UDP_PORTS//,/ }"
 EXPOSE_PANEL_PUBLIC="$(normalize_bool_choice "$EXPOSE_PANEL_PUBLIC" || true)"
 ENABLE_PANEL_2FA="$(normalize_bool_choice "$ENABLE_PANEL_2FA" || true)"
 AUTO_CREATE_INBOUND="$(normalize_bool_choice "$AUTO_CREATE_INBOUND" || true)"
+STRICT_SSH_EXTERNAL_CHECK="$(normalize_bool_choice "$STRICT_SSH_EXTERNAL_CHECK" || true)"
 PANEL_RESET_MODE="$(printf '%s' "$PANEL_RESET_MODE" | tr '[:upper:]' '[:lower:]')"
 
 missing=()
@@ -1184,6 +1355,10 @@ case "$AUTO_CREATE_INBOUND" in
   true|false) ;;
   *) die "AUTO_CREATE_INBOUND must be true or false." ;;
 esac
+case "$STRICT_SSH_EXTERNAL_CHECK" in
+  true|false) ;;
+  *) die "STRICT_SSH_EXTERNAL_CHECK must be true or false." ;;
+esac
 case "$PANEL_RESET_MODE" in
   none|2fa|factory) ;;
   *) die "PANEL_RESET_MODE must be one of: none, 2fa, factory." ;;
@@ -1191,6 +1366,7 @@ esac
 if [[ "$PANEL_RESET_MODE" == "factory" && ! -t 0 && "$PANEL_FACTORY_RESET_CONFIRM" != "FACTORY" ]]; then
   die "PANEL_RESET_MODE=factory requires PANEL_FACTORY_RESET_CONFIRM=FACTORY in non-interactive mode."
 fi
+save_state_checkpoint
 
 if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
   is_valid_port "$INBOUND_PORT" || die "INBOUND_PORT must be 1..65535."
@@ -1314,10 +1490,13 @@ if [[ -z "$SSH_ALLOW_USERS" ]]; then
   SSH_ALLOW_USERS="$NEW_USER"
 fi
 
+SSH_ORIGINAL_UNIT="$(detect_ssh_unit)" || die "Could not detect SSH systemd unit (expected ssh.service or sshd.service)."
+backup_ssh_config_for_rollback
+
 log "Applying SSH hardening"
 ensure_sshd_dropin_include
 rm -f /etc/ssh/sshd_config.d/99-3xui-hardening.conf
-cat > /etc/ssh/sshd_config.d/00-3xui-hardening.conf <<EOF
+cat > "$SSH_HARDENING_CONF_PATH" <<EOF
 Port ${SSH_PORT}
 PermitRootLogin no
 PasswordAuthentication yes
@@ -1328,7 +1507,7 @@ EOF
 
 /usr/sbin/sshd -t
 validate_sshd_root_login_no "before restart"
-ROOT_SSH_DISABLED_CONFIRMED="pending (restart deferred until after ufw enable)"
+ROOT_SSH_DISABLED_CONFIRMED="pending (final apply deferred until setup completion)"
 mark_step_applied "ssh hardening"
 
 log "Configuring fail2ban for SSH"
@@ -1417,15 +1596,6 @@ if [[ "$EXPOSE_PANEL_PUBLIC" == "false" ]]; then
 fi
 ufw --force enable
 mark_step_applied "ufw"
-log "Applying pending SSH daemon restart after UFW enable"
-if systemctl list-unit-files | grep -q '^ssh\.service'; then
-  systemctl restart ssh
-else
-  systemctl restart sshd
-fi
-validate_sshd_root_login_no "after restart"
-ROOT_SSH_DISABLED_CONFIRMED="yes"
-mark_step_applied "ssh restart"
 
 log "Issuing/refreshing Let's Encrypt certificate for ${DOMAIN}"
 certbot certonly \
@@ -1495,6 +1665,53 @@ EOF
 systemctl daemon-reload
 systemctl enable --now 3xui-cert-renew.timer
 mark_step_applied "renew timer"
+
+log "WARNING: Final SSH apply will restart ${SSH_ORIGINAL_UNIT} and switch SSH to port ${SSH_PORT} for user ${NEW_USER}."
+if [[ "$SSH_PASSWORD_CHANGED" == "true" ]]; then
+  log "WARNING: SSH password changed for ${NEW_USER}; ensure it is saved before reconnect."
+else
+  log "WARNING: SSH password for ${NEW_USER} was not changed; reconnect will use existing password."
+fi
+log "WARNING: Keep this session open, then reconnect with: ssh -p ${SSH_PORT} ${NEW_USER}@<SERVER_IP>"
+if ! precheck_ssh_firewall_before_apply; then
+  die "Refusing final SSH apply: UFW is not active or missing allow rule for ${SSH_PORT}/tcp."
+fi
+
+log "Applying final SSH daemon restart (${SSH_ORIGINAL_UNIT})"
+if ! systemctl restart "$SSH_ORIGINAL_UNIT"; then
+  rollback_ssh_apply_or_die "Failed to restart SSH unit ${SSH_ORIGINAL_UNIT}"
+fi
+
+log "Waiting for local SSH listener on port ${SSH_PORT}"
+if ! wait_for_local_ssh_listener 20 1; then
+  rollback_ssh_apply_or_die "Local SSH listener check failed on port ${SSH_PORT}"
+fi
+log "Local SSH listener is active on port ${SSH_PORT}"
+
+if [[ "$STRICT_SSH_EXTERNAL_CHECK" == "true" ]]; then
+  SSH_EXTERNAL_PROBE_IP="$(curl -4fsS --max-time 8 https://api.ipify.org || true)"
+  log "Running strict external SSH probe to ${SSH_EXTERNAL_PROBE_IP:-<unknown>}:${SSH_PORT}"
+  if [[ -z "$SSH_EXTERNAL_PROBE_IP" ]]; then
+    SSH_EXTERNAL_PROBE_STATUS="failed (public IPv4 detection failed)"
+    rollback_ssh_apply_or_die "Strict external SSH probe failed: could not detect public IPv4"
+  fi
+  if ! probe_public_ssh_port "$SSH_EXTERNAL_PROBE_IP" 5; then
+    SSH_EXTERNAL_PROBE_STATUS="failed (${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT})"
+    rollback_ssh_apply_or_die "Strict external SSH probe failed for ${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT}"
+  fi
+  SSH_EXTERNAL_PROBE_STATUS="passed (${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT})"
+  log "Strict external SSH probe passed for ${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT}"
+else
+  SSH_EXTERNAL_PROBE_STATUS="skipped (STRICT_SSH_EXTERNAL_CHECK=false)"
+  log "Strict external SSH probe disabled; skipping public probe."
+fi
+
+if ! validate_sshd_root_login_no "after restart" "return"; then
+  rollback_ssh_apply_or_die "SSH hardening post-check failed after restarting ${SSH_ORIGINAL_UNIT}"
+fi
+ROOT_SSH_DISABLED_CONFIRMED="yes"
+cleanup_ssh_config_backup
+mark_step_applied "ssh restart"
 
 CRED_FILE="/root/3x-ui-bootstrap-credentials.txt"
 cat > "$CRED_FILE" <<EOF
@@ -1581,6 +1798,7 @@ Panel 2FA: ${TWO_FACTOR_SUMMARY}
 Panel 2FA token (save in authenticator): ${PANEL_2FA_TOKEN:-not-enabled}
 Panel exposure: ${EXPOSE_PANEL_PUBLIC}
 Root SSH login disabled: confirmed (PermitRootLogin no)
+SSH external probe: ${SSH_EXTERNAL_PROBE_STATUS}
 
 ${INBOUND_DETAILS}
 
