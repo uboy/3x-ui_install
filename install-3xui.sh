@@ -1336,9 +1336,7 @@ if [[ -t 0 ]]; then
       factory)
         printf 'WARNING: factory mode will stop 3x-ui, recreate panel DB, and reset panel config to defaults.\n' >&2
         printf 'A timestamped backup archive of %s/db will be created first.\n' "$PANEL_DIR" >&2
-        read -r -p "Type FACTORY to confirm factory reset mode: " confirm
-        [[ "$confirm" == "FACTORY" ]] && break
-        printf "Factory reset mode not confirmed.\n" >&2
+        break
         ;;
       *)
         printf "Enter one of: none, 2fa, factory.\n" >&2
@@ -1580,9 +1578,6 @@ case "$PANEL_RESET_MODE" in
   none|2fa|factory) ;;
   *) die "PANEL_RESET_MODE must be one of: none, 2fa, factory." ;;
 esac
-if [[ "$PANEL_RESET_MODE" == "factory" && ! -t 0 && "$PANEL_FACTORY_RESET_CONFIRM" != "FACTORY" ]]; then
-  die "PANEL_RESET_MODE=factory requires PANEL_FACTORY_RESET_CONFIRM=FACTORY in non-interactive mode."
-fi
 save_state_checkpoint
 
 if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
