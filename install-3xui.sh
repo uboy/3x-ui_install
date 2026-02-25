@@ -269,8 +269,38 @@ ensure_passwordless_sudo() {
   visudo -cf /etc/sudoers >/dev/null || die "sudoers validation failed after updating ${sudoers_file}."
 }
 
+generate_random_fixed() {
+  local length="${1:-}"
+  local charset="${2:-}"
+  local lowercase="${3:-false}"
+  local value=""
+  local chunk=""
+  local attempt
+
+  [[ "$length" =~ ^[0-9]+$ ]] || return 1
+  (( length > 0 )) || return 1
+  [[ -n "$charset" ]] || return 1
+
+  for (( attempt = 0; attempt < 32 && ${#value} < length; attempt++ )); do
+    chunk="$(openssl rand -base64 "$((length * 3))" 2>/dev/null | tr -d '\n')" || return 1
+    [[ -n "$chunk" ]] || continue
+    if [[ "$lowercase" == "true" ]]; then
+      chunk="$(printf '%s' "$chunk" | tr '[:upper:]' '[:lower:]')"
+    fi
+    chunk="$(printf '%s' "$chunk" | tr -cd "$charset")"
+    [[ -n "$chunk" ]] || continue
+    value+="$chunk"
+  done
+
+  (( ${#value} >= length )) || return 1
+  printf '%s\n' "${value:0:length}"
+}
+
 generate_strong_secret() {
-  openssl rand -base64 48 | tr -d '\n' | tr -d '/+=' | cut -c1-28
+  local value=""
+  value="$(generate_random_fixed 28 'A-Za-z0-9')" || return 1
+  [[ -n "$value" && ${#value} -eq 28 ]] || return 1
+  printf '%s\n' "$value"
 }
 
 user_has_usable_password() {
@@ -293,11 +323,17 @@ user_has_usable_password() {
 }
 
 generate_panel_username() {
-  printf 'admin_%s\n' "$(tr -dc 'a-z0-9' </dev/urandom | head -c 10)"
+  local suffix=""
+  suffix="$(generate_random_fixed 10 'a-z0-9' true)" || return 1
+  [[ -n "$suffix" && ${#suffix} -eq 10 ]] || return 1
+  printf 'admin_%s\n' "$suffix"
 }
 
 generate_base32_token() {
-  head -c 32 /dev/urandom | base32 | tr -d '=\n' | cut -c1-32
+  local token=""
+  token="$(openssl rand 20 | base32 | tr -d '=\n')" || return 1
+  [[ -n "$token" && ${#token} -eq 32 ]] || return 1
+  printf '%s\n' "$token"
 }
 
 generate_uuid() {
@@ -309,7 +345,10 @@ generate_uuid() {
 }
 
 generate_sub_id() {
-  tr -dc 'a-z0-9' </dev/urandom | head -c 16
+  local value=""
+  value="$(generate_random_fixed 16 'a-z0-9' true)" || return 1
+  [[ -n "$value" && ${#value} -eq 16 ]] || return 1
+  printf '%s\n' "$value"
 }
 
 normalize_base_path() {
@@ -786,7 +825,8 @@ panel_enable_two_factor() {
     "${PANEL_API_ORIGIN}${PANEL_BASE_PATH}panel/setting/all" || true)"
   [[ "$settings_response" == *'"success":true'* ]] || die "Failed to fetch panel settings for 2FA update."
 
-  PANEL_2FA_TOKEN="$(generate_base32_token)"
+  PANEL_2FA_TOKEN="$(generate_base32_token)" || die "Failed to generate panel 2FA token."
+  [[ -n "$PANEL_2FA_TOKEN" && ${#PANEL_2FA_TOKEN} -eq 32 ]] || die "Generated PANEL_2FA_TOKEN is invalid."
   updated_json="$(python3 -c 'import json,sys
 payload=json.load(sys.stdin)
 obj=payload.get("obj")
@@ -885,7 +925,8 @@ for item in items:
   fi
 
   [[ -n "$INBOUND_CLIENT_ID" ]] || INBOUND_CLIENT_ID="$(generate_uuid)"
-  [[ -n "$INBOUND_CLIENT_SUBID" ]] || INBOUND_CLIENT_SUBID="$(generate_sub_id)"
+  [[ -n "$INBOUND_CLIENT_SUBID" ]] || INBOUND_CLIENT_SUBID="$(generate_sub_id)" || die "Failed to generate INBOUND_CLIENT_SUBID."
+  [[ -n "$INBOUND_CLIENT_SUBID" && ${#INBOUND_CLIENT_SUBID} -eq 16 ]] || die "INBOUND_CLIENT_SUBID must be exactly 16 characters."
 
   settings_json="$(python3 -c 'import json,sys
 payload={"clients":[{"id":sys.argv[1],"flow":"","email":sys.argv[2],"limitIp":0,"totalGB":0,"expiryTime":0,"enable":True,"tgId":"","subId":sys.argv[3],"comment":"","reset":0}],"decryption":"none"}
@@ -1335,8 +1376,8 @@ fi
 is_valid_port "$SSH_PORT" || die "SSH_PORT must be 1..65535."
 is_valid_port "$PANEL_PORT" || die "PANEL_PORT must be 1..65535."
 is_valid_port "$SUB_PORT" || die "SUB_PORT must be 1..65535."
-[[ -n "$PANEL_ADMIN_USER" ]] || PANEL_ADMIN_USER="$(generate_panel_username)"
-[[ -n "$PANEL_ADMIN_PASS" ]] || PANEL_ADMIN_PASS="$(generate_strong_secret)"
+[[ -n "$PANEL_ADMIN_USER" ]] || PANEL_ADMIN_USER="$(generate_panel_username)" || die "Failed to generate PANEL_ADMIN_USER."
+[[ -n "$PANEL_ADMIN_PASS" ]] || PANEL_ADMIN_PASS="$(generate_strong_secret)" || die "Failed to generate PANEL_ADMIN_PASS."
 [[ "$PANEL_ADMIN_USER" =~ ^[A-Za-z0-9_.@-]{3,64}$ ]] || die "PANEL_ADMIN_USER must match ^[A-Za-z0-9_.@-]{3,64}$."
 [[ "$PANEL_ADMIN_PASS" != *$'\n'* ]] || die "PANEL_ADMIN_PASS must not contain newline characters."
 [[ "$PANEL_CURRENT_PASS" != *$'\n'* ]] || die "PANEL_CURRENT_PASS must not contain newline characters."
@@ -1422,9 +1463,12 @@ username_is_valid() {
 
 generate_username() {
   local candidate=""
+  local suffix=""
   local i
   for (( i = 0; i < 50; i++ )); do
-    candidate="u$(tr -dc 'a-z0-9' </dev/urandom | head -c 14)"
+    suffix="$(generate_random_fixed 14 'a-z0-9' true)" || continue
+    candidate="u${suffix}"
+    [[ -n "$candidate" && ${#candidate} -eq 15 ]] || continue
     if username_is_valid "$candidate" && ! id -u "$candidate" >/dev/null 2>&1; then
       printf '%s\n' "$candidate"
       return 0
@@ -1461,14 +1505,16 @@ if [[ -n "$NEW_PASS" ]]; then
   SSH_PASSWORD_DISPLAY="$NEW_PASS"
   SSH_PASSWORD_CRED_VALUE="$NEW_PASS"
 elif [[ "$USER_PREEXISTED" == "false" ]]; then
-  NEW_PASS="$(openssl rand -base64 30 | tr -d '\n' | cut -c1-24)"
+  NEW_PASS="$(generate_random_fixed 24 'A-Za-z0-9+/')" || die "Failed to auto-generate NEW_PASS."
+  [[ -n "$NEW_PASS" && ${#NEW_PASS} -eq 24 ]] || die "Auto-generated NEW_PASS is invalid."
   NEW_PASS_HASH="$(printf '%s' "$NEW_PASS" | openssl passwd -6 -stdin)"
   usermod --password "$NEW_PASS_HASH" "$NEW_USER"
   SSH_PASSWORD_CHANGED="true"
   SSH_PASSWORD_DISPLAY="$NEW_PASS"
   SSH_PASSWORD_CRED_VALUE="$NEW_PASS"
 elif ! user_has_usable_password "$NEW_USER"; then
-  NEW_PASS="$(openssl rand -base64 30 | tr -d '\n' | cut -c1-24)"
+  NEW_PASS="$(generate_random_fixed 24 'A-Za-z0-9+/')" || die "Failed to auto-generate NEW_PASS."
+  [[ -n "$NEW_PASS" && ${#NEW_PASS} -eq 24 ]] || die "Auto-generated NEW_PASS is invalid."
   NEW_PASS_HASH="$(printf '%s' "$NEW_PASS" | openssl passwd -6 -stdin)"
   usermod --password "$NEW_PASS_HASH" "$NEW_USER"
   SSH_PASSWORD_CHANGED="true"
@@ -1746,7 +1792,8 @@ log "Running post-install checks"
 systemctl is-active --quiet docker || die "docker is not active"
 systemctl is-active --quiet fail2ban || die "fail2ban is not active"
 systemctl is-active --quiet 3xui-cert-renew.timer || die "3xui-cert-renew.timer is not active"
-docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" || die "container ${CONTAINER_NAME} is not running"
+container_names="$(docker ps --format '{{.Names}}' || true)"
+grep -Fxq -- "$CONTAINER_NAME" <<< "$container_names" || die "container ${CONTAINER_NAME} is not running"
 [[ -s "${PANEL_DIR}/cert/live/${DOMAIN}/fullchain.pem" ]] || die "fullchain.pem not found"
 [[ -s "${PANEL_DIR}/cert/live/${DOMAIN}/privkey.pem" ]] || die "privkey.pem not found"
 
