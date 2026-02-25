@@ -886,13 +886,18 @@ print("UPDATE:"+json.dumps(obj,separators=(",",":")))' "$PANEL_2FA_TOKEN" <<< "$
 panel_ensure_vless_inbound() {
   local list_response=""
   local add_response=""
+  local cert_response=""
+  local cert_parse=""
   local parse_result=""
   local parse_status=""
   local existing_id=""
   local existing_security=""
   local existing_client_id=""
   local existing_client_email=""
+  local reality_private_key=""
+  local reality_public_key=""
   local -a parsed_lines=()
+  local -a cert_lines=()
   local settings_json=""
   local stream_json=""
   local sniffing_json='{"enabled":true,"destOverride":["http","tls","quic"]}'
@@ -905,7 +910,7 @@ panel_ensure_vless_inbound() {
     reality)
       expected_security="reality"
       inbound_flow="xtls-rprx-vision"
-      sniffing_json='{"enabled":true,"destOverride":["http","tls"]}'
+      sniffing_json='{"enabled":true,"destOverride":["http","tls","fakedns"]}'
       ;;
     tls)
       expected_security="tls"
@@ -955,12 +960,17 @@ for item in items:
     first=clients[0] if clients else {}
     if security == target_security and security == "reality":
         reality=stream.get("realitySettings") if isinstance(stream,dict) else {}
-        dest=str(reality.get("dest","")) if isinstance(reality,dict) else ""
+        target_value=""
+        if isinstance(reality,dict):
+            target_value=reality.get("target","")
+            if target_value in (None,""):
+                target_value=reality.get("dest","")
+        target=str(target_value or "")
         names=reality.get("serverNames") if isinstance(reality,dict) else []
         if not isinstance(names,list):
             names=[]
         names=[str(x).lower() for x in names]
-        if dest != target_dest or target_sni not in names:
+        if target != target_dest or target_sni not in names:
             print("CONFLICT")
             print(str(item.get("id","")))
             print(str(first.get("id","")))
@@ -997,7 +1007,7 @@ for item in items:
         return 0
         ;;
       CONFLICT)
-        die "Inbound conflict on port ${INBOUND_PORT}: existing VLESS inbound id=${existing_id:-unknown} is incompatible with requested INBOUND_MODE=${INBOUND_MODE} (existing security='${existing_security}', expected='${expected_security}'; for reality, dest/SNI must also match). Remove/update the existing inbound or choose another INBOUND_PORT."
+        die "Inbound conflict on port ${INBOUND_PORT}: existing VLESS inbound id=${existing_id:-unknown} is incompatible with requested INBOUND_MODE=${INBOUND_MODE} (existing security='${existing_security}', expected='${expected_security}'; for reality, target/SNI must also match). Remove/update the existing inbound or choose another INBOUND_PORT."
         ;;
       *)
         die "Failed to parse existing inbound state for port ${INBOUND_PORT}."
@@ -1008,6 +1018,29 @@ for item in items:
   [[ -n "$INBOUND_CLIENT_ID" ]] || INBOUND_CLIENT_ID="$(generate_uuid)"
   [[ -n "$INBOUND_CLIENT_SUBID" ]] || INBOUND_CLIENT_SUBID="$(generate_sub_id)" || die "Failed to generate INBOUND_CLIENT_SUBID."
   [[ -n "$INBOUND_CLIENT_SUBID" && ${#INBOUND_CLIENT_SUBID} -eq 16 ]] || die "INBOUND_CLIENT_SUBID must be exactly 16 characters."
+  if [[ "$INBOUND_MODE" == "reality" ]]; then
+    cert_response="$(curl -ksS --max-time 10 \
+      -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" \
+      "${PANEL_API_ORIGIN}${PANEL_BASE_PATH}panel/api/server/getNewX25519Cert" || true)"
+    [[ "$cert_response" == *'"success":true'* ]] || die "Failed to request Reality X25519 keys from panel API endpoint /panel/api/server/getNewX25519Cert."
+    if ! cert_parse="$(python3 -c 'import json,sys
+payload=json.load(sys.stdin)
+obj=payload.get("obj")
+if not isinstance(obj,dict):
+    raise SystemExit(1)
+private_key=str(obj.get("privateKey","") or "")
+public_key=str(obj.get("publicKey","") or "")
+if not private_key or not public_key:
+    raise SystemExit(1)
+print(private_key)
+print(public_key)' <<< "$cert_response" 2>/dev/null)"; then
+      die "Panel API /panel/api/server/getNewX25519Cert did not return required obj.privateKey and obj.publicKey fields."
+    fi
+    mapfile -t cert_lines <<< "$cert_parse"
+    reality_private_key="${cert_lines[0]:-}"
+    reality_public_key="${cert_lines[1]:-}"
+    [[ -n "$reality_private_key" && -n "$reality_public_key" ]] || die "Panel API /panel/api/server/getNewX25519Cert returned empty Reality X25519 keys."
+  fi
 
   settings_json="$(python3 -c 'import json,sys
 payload={"clients":[{"id":sys.argv[1],"flow":sys.argv[4],"email":sys.argv[2],"limitIp":0,"totalGB":0,"expiryTime":0,"enable":True,"tgId":"","subId":sys.argv[3],"comment":"","reset":0}],"decryption":"none"}
@@ -1019,8 +1052,8 @@ payload={"network":"tcp","security":"tls","tcpSettings":{"acceptProxyProtocol":F
 print(json.dumps(payload,separators=(",",":")))' "$INBOUND_SNI" "$cert_file" "$key_file")"
   else
     stream_json="$(python3 -c 'import json,sys
-payload={"network":"tcp","security":"reality","tcpSettings":{"acceptProxyProtocol":False,"header":{"type":"none"}},"realitySettings":{"show":False,"dest":sys.argv[1],"serverNames":[sys.argv[2]],"privateKey":"","shortIds":[""]}}
-print(json.dumps(payload,separators=(",",":")))' "$INBOUND_DEST" "$INBOUND_SNI")"
+payload={"network":"tcp","security":"reality","tcpSettings":{"acceptProxyProtocol":False,"header":{"type":"none"}},"realitySettings":{"show":False,"target":sys.argv[1],"serverNames":[sys.argv[2]],"privateKey":sys.argv[3],"shortIds":[""],"settings":{"publicKey":sys.argv[4]}}}
+print(json.dumps(payload,separators=(",",":")))' "$INBOUND_DEST" "$INBOUND_SNI" "$reality_private_key" "$reality_public_key")"
   fi
 
   add_response="$(curl -ksS --max-time 12 \
@@ -1976,10 +2009,10 @@ Inbound mode: ${INBOUND_MODE}
 Inbound protocol: VLESS TCP REALITY
 Inbound security: reality
 Inbound port: ${INBOUND_PORT}
-Inbound Reality dest: ${INBOUND_DEST}
+Inbound Reality target: ${INBOUND_DEST}
 Inbound Reality serverName/SNI: ${INBOUND_SNI}
 Inbound flow: xtls-rprx-vision
-Inbound sniffing: http,tls (quic disabled)
+Inbound sniffing: http,tls,fakedns (quic disabled)
 Inbound id: ${INBOUND_ID:-n/a}
 Inbound client email: ${INBOUND_CLIENT_EMAIL}
 Inbound client UUID: ${INBOUND_CLIENT_ID:-n/a}
