@@ -896,6 +896,7 @@ panel_ensure_vless_inbound() {
   local existing_client_email=""
   local reality_private_key=""
   local reality_public_key=""
+  local reality_short_id=""
   local -a parsed_lines=()
   local -a cert_lines=()
   local settings_json=""
@@ -967,9 +968,11 @@ for item in items:
                 target_value=reality.get("dest","")
         target=str(target_value or "")
         names=reality.get("serverNames") if isinstance(reality,dict) else []
-        if not isinstance(names,list):
+        if isinstance(names,str):
+            names=[x.strip() for x in names.split(",") if x.strip()]
+        elif not isinstance(names,list):
             names=[]
-        names=[str(x).lower() for x in names]
+        names=[str(x).strip().lower() for x in names if str(x).strip()]
         if target != target_dest or target_sni not in names:
             print("CONFLICT")
             print(str(item.get("id","")))
@@ -1040,6 +1043,8 @@ print(public_key)' <<< "$cert_response" 2>/dev/null)"; then
     reality_private_key="${cert_lines[0]:-}"
     reality_public_key="${cert_lines[1]:-}"
     [[ -n "$reality_private_key" && -n "$reality_public_key" ]] || die "Panel API /panel/api/server/getNewX25519Cert returned empty Reality X25519 keys."
+    reality_short_id="$(openssl rand -hex 8 2>/dev/null | tr -d '\n' | tr '[:upper:]' '[:lower:]')" || die "Failed to generate Reality shortId."
+    [[ "$reality_short_id" =~ ^[0-9a-f]{16}$ ]] || die "Generated Reality shortId must be exactly 16 hex characters."
   fi
 
   settings_json="$(python3 -c 'import json,sys
@@ -1052,8 +1057,8 @@ payload={"network":"tcp","security":"tls","tcpSettings":{"acceptProxyProtocol":F
 print(json.dumps(payload,separators=(",",":")))' "$INBOUND_SNI" "$cert_file" "$key_file")"
   else
     stream_json="$(python3 -c 'import json,sys
-payload={"network":"tcp","security":"reality","tcpSettings":{"acceptProxyProtocol":False,"header":{"type":"none"}},"realitySettings":{"show":False,"target":sys.argv[1],"serverNames":[sys.argv[2]],"privateKey":sys.argv[3],"shortIds":[""],"settings":{"publicKey":sys.argv[4]}}}
-print(json.dumps(payload,separators=(",",":")))' "$INBOUND_DEST" "$INBOUND_SNI" "$reality_private_key" "$reality_public_key")"
+payload={"network":"tcp","security":"reality","tcpSettings":{"acceptProxyProtocol":False,"header":{"type":"none"}},"realitySettings":{"show":False,"target":sys.argv[1],"dest":sys.argv[1],"serverNames":[sys.argv[2]],"privateKey":sys.argv[3],"shortIds":[sys.argv[5]],"settings":{"publicKey":sys.argv[4],"fingerprint":"chrome","serverName":sys.argv[2],"spiderX":"/"}}}
+print(json.dumps(payload,separators=(",",":")))' "$INBOUND_DEST" "$INBOUND_SNI" "$reality_private_key" "$reality_public_key" "$reality_short_id")"
   fi
 
   add_response="$(curl -ksS --max-time 12 \
