@@ -12,6 +12,7 @@ STATE_TRACKED_KEYS=(
   NEW_USER NEW_PASS PANEL_CURRENT_USER PANEL_CURRENT_PASS PANEL_CURRENT_2FA_CODE
   PANEL_ADMIN_USER PANEL_ADMIN_PASS ENABLE_PANEL_2FA AUTO_CREATE_INBOUND
   INBOUND_PORT INBOUND_REMARK INBOUND_CLIENT_EMAIL INBOUND_SNI PANEL_2FA_TOKEN
+  PANEL_RESET_MODE PANEL_RESET_ACTION PANEL_RESET_RESULT PANEL_FACTORY_BACKUP_PATH
 )
 STATE_SECRET_KEYS=(
   NEW_PASS PANEL_CURRENT_PASS PANEL_CURRENT_2FA_CODE PANEL_ADMIN_PASS PANEL_2FA_TOKEN
@@ -473,10 +474,43 @@ panel_detect_access() {
 }
 
 panel_apply_credentials() {
+  local rc=0
+
+  PANEL_RESET_ACTION="none"
+  PANEL_RESET_RESULT="not-attempted"
+  PANEL_FACTORY_BACKUP_PATH=""
+
+  if panel_apply_credentials_api_first; then
+    return 0
+  fi
+  rc=$?
+  if (( rc != 2 )); then
+    die "Failed to update panel credentials via API fallback."
+  fi
+
+  if ! panel_recover_credentials_once; then
+    if [[ "$PANEL_RESET_MODE" == "none" ]]; then
+      die "Failed to apply panel credentials via API. Provide valid current panel credentials (and current 2FA code if enabled)."
+    fi
+    die "Panel credential recovery failed (mode=${PANEL_RESET_MODE}, action=${PANEL_RESET_ACTION}, result=${PANEL_RESET_RESULT})."
+  fi
+
+  if panel_apply_credentials_api_first; then
+    return 0
+  fi
+  rc=$?
+  if (( rc == 2 )); then
+    die "Panel credentials recovery action completed but API login still failed (mode=${PANEL_RESET_MODE}, action=${PANEL_RESET_ACTION})."
+  fi
+  die "Failed to update panel credentials via API fallback."
+}
+
+panel_apply_credentials_api_first() {
   local method="none"
   local response=""
   local old_password_file=""
   local new_password_file=""
+  local api_required="false"
 
   if panel_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$PANEL_CURRENT_2FA_CODE"; then
     PANEL_CREDS_METHOD="already-set"
@@ -495,36 +529,104 @@ panel_apply_credentials() {
       --data-urlencode "newUsername=${PANEL_ADMIN_USER}" \
       --data-urlencode "newPassword@${new_password_file}" \
       "${PANEL_API_ORIGIN}${PANEL_BASE_PATH}panel/setting/updateUser" || true)"
-    [[ "$response" == *'"success":true'* ]] || die "Failed to update panel credentials via API fallback."
+    [[ "$response" == *'"success":true'* ]] || return 1
     method="api"
+  fi
+
+  if [[ "$AUTO_CREATE_INBOUND" == "true" || "$ENABLE_PANEL_2FA" == "true" ]]; then
+    api_required="true"
   fi
 
   if panel_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$PANEL_CURRENT_2FA_CODE"; then
     PANEL_API_LOGIN_AVAILABLE="true"
-  elif [[ "$AUTO_CREATE_INBOUND" == "true" || "$ENABLE_PANEL_2FA" == "true" ]]; then
-    if docker exec "$CONTAINER_NAME" sh -lc 'command -v x-ui >/dev/null 2>&1' && \
-       docker exec "$CONTAINER_NAME" x-ui setting -resetTwoFactor >/dev/null 2>&1 && \
-       panel_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS"; then
-      PANEL_API_LOGIN_AVAILABLE="true"
-      PANEL_2FA_RESET_FOR_API="true"
-      PANEL_2FA_EFFECTIVE="false"
-      PANEL_2FA_TOKEN=""
-    else
-      die "Panel credentials applied, but API login failed. Provide valid credentials (and current 2FA code if enabled) or keep x-ui CLI available."
-    fi
-  else
-    [[ "$method" != "none" ]] || die "Failed to apply panel credentials via API. Provide valid current panel credentials (and current 2FA code if enabled)."
+  elif [[ "$method" != "none" && "$api_required" != "true" ]]; then
     PANEL_API_LOGIN_AVAILABLE="false"
-  fi
-
-  if [[ "$method" == "none" && "$PANEL_2FA_RESET_FOR_API" == "true" ]]; then
-    method="cli-reset-two-factor"
+  else
+    return 2
   fi
 
   case "$method" in
     api) PANEL_CREDS_METHOD="api" ;;
-    cli-reset-two-factor) PANEL_CREDS_METHOD="cli-reset-two-factor" ;;
     *) PANEL_CREDS_METHOD="unknown" ;;
+  esac
+}
+
+panel_reset_two_factor_cli() {
+  if ! docker exec "$CONTAINER_NAME" sh -lc 'command -v x-ui >/dev/null 2>&1'; then
+    return 1
+  fi
+  if ! docker exec "$CONTAINER_NAME" x-ui setting -resetTwoFactor >/dev/null 2>&1; then
+    return 1
+  fi
+  PANEL_CURRENT_2FA_CODE=""
+  PANEL_2FA_RESET_FOR_API="true"
+  PANEL_2FA_EFFECTIVE="false"
+  PANEL_2FA_TOKEN=""
+  return 0
+}
+
+panel_factory_reset_with_backup() {
+  local timestamp=""
+  local backup_dir=""
+  local backup_path=""
+  local compose_file=""
+
+  timestamp="$(date '+%Y%m%d-%H%M%S')"
+  backup_dir="${PANEL_DIR}/backup"
+  backup_path="${backup_dir}/db-${timestamp}.tar.gz"
+  compose_file="${PANEL_DIR}/docker-compose.yml"
+
+  install -d -m 700 "$backup_dir" || return 1
+  [[ -d "${PANEL_DIR}/db" ]] || return 1
+  tar -C "$PANEL_DIR" -czf "$backup_path" db || return 1
+  chmod 600 "$backup_path" 2>/dev/null || true
+  PANEL_FACTORY_BACKUP_PATH="$backup_path"
+
+  docker compose -f "$compose_file" down || return 1
+  rm -rf "${PANEL_DIR}/db"
+  install -d -m 700 "${PANEL_DIR}/db" || return 1
+  docker compose -f "$compose_file" up -d || return 1
+  panel_wait_ready || return 1
+  panel_detect_access || return 1
+
+  PANEL_CURRENT_USER="admin"
+  PANEL_CURRENT_PASS="admin"
+  PANEL_CURRENT_2FA_CODE=""
+  PANEL_2FA_EFFECTIVE="false"
+  PANEL_2FA_TOKEN=""
+  return 0
+}
+
+panel_recover_credentials_once() {
+  case "$PANEL_RESET_MODE" in
+    none)
+      PANEL_RESET_ACTION="none"
+      PANEL_RESET_RESULT="skipped"
+      return 1
+      ;;
+    2fa)
+      PANEL_RESET_ACTION="cli-reset-two-factor"
+      if panel_reset_two_factor_cli; then
+        PANEL_RESET_RESULT="success"
+        return 0
+      fi
+      PANEL_RESET_RESULT="failed"
+      return 1
+      ;;
+    factory)
+      PANEL_RESET_ACTION="factory-reset"
+      if panel_factory_reset_with_backup; then
+        PANEL_RESET_RESULT="success"
+        return 0
+      fi
+      PANEL_RESET_RESULT="failed"
+      return 1
+      ;;
+    *)
+      PANEL_RESET_ACTION="invalid-mode"
+      PANEL_RESET_RESULT="failed"
+      return 1
+      ;;
   esac
 }
 
@@ -733,6 +835,11 @@ resolve_var_from_env_state_default PANEL_ADMIN_PASS ""
 resolve_var_from_env_state_default PANEL_CURRENT_USER "admin"
 resolve_var_from_env_state_default PANEL_CURRENT_PASS "admin"
 resolve_var_from_env_state_default PANEL_CURRENT_2FA_CODE ""
+resolve_var_from_env_state_default PANEL_RESET_MODE "none"
+PANEL_FACTORY_RESET_CONFIRM="${PANEL_FACTORY_RESET_CONFIRM:-}"
+resolve_var_from_env_state_default PANEL_RESET_ACTION "none"
+resolve_var_from_env_state_default PANEL_RESET_RESULT "not-attempted"
+resolve_var_from_env_state_default PANEL_FACTORY_BACKUP_PATH ""
 resolve_var_from_env_state_default ENABLE_PANEL_2FA "false"
 resolve_var_from_env_state_default AUTO_CREATE_INBOUND "false"
 # Default inbound port is 443 unless INBOUND_PORT is explicitly provided.
@@ -759,6 +866,9 @@ PANEL_API_LOGIN_AVAILABLE="false"
 PANEL_2FA_TOKEN=""
 PANEL_2FA_EFFECTIVE="false"
 PANEL_2FA_RESET_FOR_API="false"
+PANEL_RESET_ACTION="none"
+PANEL_RESET_RESULT="not-attempted"
+PANEL_FACTORY_BACKUP_PATH=""
 INBOUND_STATUS="not-requested"
 INBOUND_ID=""
 
@@ -863,12 +973,25 @@ if [[ -t 0 ]]; then
   save_state_checkpoint
 
   while :; do
-    read -r -p "SSH username (optional, blank = auto-generate): " input
-    NEW_USER="$input"
-    if [[ -z "$NEW_USER" ]]; then
-      USER_EXPLICIT=false
-      break
+    if [[ -n "$NEW_USER" ]]; then
+      read -r -p "SSH username [${NEW_USER}] (Enter keeps, type 'auto' to auto-generate): " input
+      if [[ -z "$input" ]]; then
+        USER_EXPLICIT=true
+        break
+      fi
+      if [[ "${input,,}" == "auto" ]]; then
+        NEW_USER=""
+        USER_EXPLICIT=false
+        break
+      fi
+    else
+      read -r -p "SSH username (optional, blank = auto-generate): " input
+      if [[ -z "$input" ]]; then
+        USER_EXPLICIT=false
+        break
+      fi
     fi
+    NEW_USER="$input"
     [[ "$NEW_USER" =~ ^[a-z][-a-z0-9_]{0,31}$ ]] || {
       printf "Username must match ^[a-z][-a-z0-9_]{0,31}$.\n" >&2
       continue
@@ -913,6 +1036,28 @@ if [[ -t 0 ]]; then
   else
     read -r -p "Current panel 2FA code for API fallback (optional): " PANEL_CURRENT_2FA_CODE
   fi
+  save_state_checkpoint
+
+  while :; do
+    read -r -p "Panel credential recovery mode [${PANEL_RESET_MODE}] (none/2fa/factory): " input
+    PANEL_RESET_MODE="${input:-$PANEL_RESET_MODE}"
+    PANEL_RESET_MODE="$(printf '%s' "$PANEL_RESET_MODE" | tr '[:upper:]' '[:lower:]')"
+    case "$PANEL_RESET_MODE" in
+      none|2fa)
+        break
+        ;;
+      factory)
+        printf 'WARNING: factory mode will stop 3x-ui, recreate panel DB, and reset panel config to defaults.\n' >&2
+        printf 'A timestamped backup archive of %s/db will be created first.\n' "$PANEL_DIR" >&2
+        read -r -p "Type FACTORY to confirm factory reset mode: " confirm
+        [[ "$confirm" == "FACTORY" ]] && break
+        printf "Factory reset mode not confirmed.\n" >&2
+        ;;
+      *)
+        printf "Enter one of: none, 2fa, factory.\n" >&2
+        ;;
+    esac
+  done
   save_state_checkpoint
 
   while :; do
@@ -996,6 +1141,7 @@ OPEN_UDP_PORTS="${OPEN_UDP_PORTS//,/ }"
 EXPOSE_PANEL_PUBLIC="$(normalize_bool_choice "$EXPOSE_PANEL_PUBLIC" || true)"
 ENABLE_PANEL_2FA="$(normalize_bool_choice "$ENABLE_PANEL_2FA" || true)"
 AUTO_CREATE_INBOUND="$(normalize_bool_choice "$AUTO_CREATE_INBOUND" || true)"
+PANEL_RESET_MODE="$(printf '%s' "$PANEL_RESET_MODE" | tr '[:upper:]' '[:lower:]')"
 
 missing=()
 for v in DOMAIN EMAIL OPEN_TCP_PORTS; do
@@ -1030,6 +1176,13 @@ case "$AUTO_CREATE_INBOUND" in
   true|false) ;;
   *) die "AUTO_CREATE_INBOUND must be true or false." ;;
 esac
+case "$PANEL_RESET_MODE" in
+  none|2fa|factory) ;;
+  *) die "PANEL_RESET_MODE must be one of: none, 2fa, factory." ;;
+esac
+if [[ "$PANEL_RESET_MODE" == "factory" && ! -t 0 && "$PANEL_FACTORY_RESET_CONFIRM" != "FACTORY" ]]; then
+  die "PANEL_RESET_MODE=factory requires PANEL_FACTORY_RESET_CONFIRM=FACTORY in non-interactive mode."
+fi
 
 if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
   is_valid_port "$INBOUND_PORT" || die "INBOUND_PORT must be 1..65535."
@@ -1346,6 +1499,10 @@ PANEL_BASE_PATH=${PANEL_BASE_PATH}
 PANEL_LOCAL_URL=${PANEL_API_ORIGIN}${PANEL_BASE_PATH}
 PANEL_CREDS_APPLY_METHOD=${PANEL_CREDS_METHOD}
 PANEL_API_LOGIN_AVAILABLE=${PANEL_API_LOGIN_AVAILABLE}
+PANEL_RESET_MODE=${PANEL_RESET_MODE}
+PANEL_RESET_ACTION=${PANEL_RESET_ACTION}
+PANEL_RESET_RESULT=${PANEL_RESET_RESULT}
+PANEL_FACTORY_BACKUP_PATH=${PANEL_FACTORY_BACKUP_PATH}
 PANEL_2FA_RESET_FOR_API=${PANEL_2FA_RESET_FOR_API}
 PANEL_2FA_ENABLED=${PANEL_2FA_EFFECTIVE}
 PANEL_2FA_TOKEN=${PANEL_2FA_TOKEN}
@@ -1407,6 +1564,10 @@ Panel admin password: ${PANEL_ADMIN_PASS}
 Panel base path: ${PANEL_BASE_PATH}
 Panel credential apply method: ${PANEL_CREDS_METHOD}
 Panel API login available: ${PANEL_API_LOGIN_AVAILABLE}
+Panel recovery mode: ${PANEL_RESET_MODE}
+Panel recovery action: ${PANEL_RESET_ACTION}
+Panel recovery result: ${PANEL_RESET_RESULT}
+Panel factory backup: ${PANEL_FACTORY_BACKUP_PATH:-not-created}
 Panel 2FA reset by CLI for API access: ${PANEL_2FA_RESET_FOR_API}
 Panel 2FA: ${TWO_FACTOR_SUMMARY}
 Panel 2FA token (save in authenticator): ${PANEL_2FA_TOKEN:-not-enabled}
