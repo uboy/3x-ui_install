@@ -2,7 +2,62 @@
 set -Eeuo pipefail
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
-die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+APPLIED_STEPS=()
+FAIL_REASON=""
+STATE_FILE_DEFAULT="/root/.3x-ui-install.state"
+INSTALL_STATE_FILE="${INSTALL_STATE_FILE:-$STATE_FILE_DEFAULT}"
+STATE_KEEP_SECRETS_ON_SUCCESS="${STATE_KEEP_SECRETS_ON_SUCCESS:-true}"
+STATE_TRACKED_KEYS=(
+  DOMAIN EMAIL OPEN_TCP_PORTS OPEN_UDP_PORTS SSH_PORT EXPOSE_PANEL_PUBLIC
+  NEW_USER NEW_PASS PANEL_CURRENT_USER PANEL_CURRENT_PASS PANEL_CURRENT_2FA_CODE
+  PANEL_ADMIN_USER PANEL_ADMIN_PASS ENABLE_PANEL_2FA AUTO_CREATE_INBOUND
+  INBOUND_PORT INBOUND_REMARK INBOUND_CLIENT_EMAIL INBOUND_SNI PANEL_2FA_TOKEN
+)
+STATE_SECRET_KEYS=(
+  NEW_PASS PANEL_CURRENT_PASS PANEL_CURRENT_2FA_CODE PANEL_ADMIN_PASS PANEL_2FA_TOKEN
+)
+declare -A STATE_VALUES=()
+
+mark_step_applied() {
+  local step="$1"
+  local existing=""
+  [[ -n "$step" ]] || return 0
+  for existing in "${APPLIED_STEPS[@]}"; do
+    [[ "$existing" == "$step" ]] && return 0
+  done
+  APPLIED_STEPS+=("$step")
+}
+
+report_failure_progress() {
+  local rc="${1:-1}"
+  local joined=""
+  local step=""
+
+  printf '\nINSTALL FAILED (exit code %s)\n' "$rc" >&2
+  if [[ -n "$FAIL_REASON" ]]; then
+    printf 'Failure reason: %s\n' "$FAIL_REASON" >&2
+  fi
+
+  if (( ${#APPLIED_STEPS[@]} > 0 )); then
+    for step in "${APPLIED_STEPS[@]}"; do
+      if [[ -n "$joined" ]]; then
+        joined+=", "
+      fi
+      joined+="$step"
+    done
+    printf 'Applied steps: %s\n' "$joined" >&2
+  else
+    printf 'Applied steps: none\n' >&2
+  fi
+}
+
+die() {
+  local message="$*"
+  [[ -n "$message" ]] || message="Unknown error."
+  [[ -n "$FAIL_REASON" ]] || FAIL_REASON="$message"
+  printf 'ERROR: %s\n' "$message" >&2
+  exit 1
+}
 
 read_name_regex() {
   local cfg="/etc/adduser.conf"
@@ -46,6 +101,152 @@ normalize_bool_choice() {
     false|no|n|0|'') printf 'false\n' ;;
     *) return 1 ;;
   esac
+}
+
+state_key_is_tracked() {
+  local key="$1"
+  local candidate=""
+  for candidate in "${STATE_TRACKED_KEYS[@]}"; do
+    [[ "$candidate" == "$key" ]] && return 0
+  done
+  return 1
+}
+
+state_key_is_secret() {
+  local key="$1"
+  local candidate=""
+  for candidate in "${STATE_SECRET_KEYS[@]}"; do
+    [[ "$candidate" == "$key" ]] && return 0
+  done
+  return 1
+}
+
+# Priority: env > state > default
+resolve_var_from_env_state_default() {
+  local key="$1"
+  local default_value="$2"
+
+  if [[ -n "${!key+x}" ]]; then
+    return 0
+  fi
+  if [[ -n "${STATE_VALUES[$key]+x}" ]]; then
+    printf -v "$key" '%s' "${STATE_VALUES[$key]}"
+    return 0
+  fi
+  printf -v "$key" '%s' "$default_value"
+}
+
+state_file_is_secure() {
+  local state_file="$1"
+  local owner_uid=""
+  local perm_octal=""
+  local perm_masked=0
+
+  [[ -f "$state_file" ]] || return 1
+  [[ ! -L "$state_file" ]] || return 1
+
+  owner_uid="$(stat -c '%u' "$state_file" 2>/dev/null || true)"
+  perm_octal="$(stat -c '%a' "$state_file" 2>/dev/null || true)"
+  [[ "$owner_uid" == "0" ]] || return 1
+  [[ "$perm_octal" =~ ^[0-7]{3,4}$ ]] || return 1
+
+  perm_masked=$(( 8#$perm_octal & 077 ))
+  (( perm_masked == 0 ))
+}
+
+load_install_state() {
+  local state_file="$INSTALL_STATE_FILE"
+  local line=""
+  local key=""
+  local encoded=""
+  local decoded=""
+  local loaded_count=0
+
+  if [[ ! -f "$state_file" ]]; then
+    log "State load: no file at ${state_file}"
+    return 0
+  fi
+  if [[ ! -r "$state_file" ]]; then
+    log "State load: file is not readable (${state_file})"
+    return 0
+  fi
+  if ! state_file_is_secure "$state_file"; then
+    log "State load: ignored insecure file ${state_file} (expected root-owned regular file, mode 600/400)."
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" == \#* ]] && continue
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    encoded="${line#*=}"
+    [[ "$key" =~ ^[A-Z0-9_]+$ ]] || continue
+    state_key_is_tracked "$key" || continue
+    if decoded="$(printf '%s' "$encoded" | base64 --decode 2>/dev/null)"; then
+      STATE_VALUES["$key"]="$decoded"
+      loaded_count=$((loaded_count + 1))
+    fi
+  done < "$state_file"
+
+  log "State load: restored ${loaded_count} key(s) from ${state_file}"
+  return 0
+}
+
+save_install_state() {
+  local include_secrets="${1:-true}"
+  local mode="${2:-checkpoint}"
+  local state_file="$INSTALL_STATE_FILE"
+  local state_dir=""
+  local tmp_file=""
+  local key=""
+  local value=""
+  local encoded=""
+  local saved_count=0
+
+  state_dir="$(dirname "$state_file")"
+  if ! install -d -m 700 "$state_dir" 2>/dev/null; then
+    log "State save: skipped (cannot create ${state_dir})"
+    return 0
+  fi
+
+  tmp_file="$(mktemp /tmp/3xui-state.XXXXXX 2>/dev/null || true)"
+  if [[ -z "$tmp_file" ]]; then
+    log "State save: skipped (failed to create temporary file)"
+    return 0
+  fi
+  chmod 600 "$tmp_file" 2>/dev/null || true
+
+  for key in "${STATE_TRACKED_KEYS[@]}"; do
+    if [[ "$include_secrets" != "true" ]] && state_key_is_secret "$key"; then
+      continue
+    fi
+    value="${!key-}"
+    encoded="$(printf '%s' "$value" | base64 | tr -d '\n')"
+    if ! printf '%s=%s\n' "$key" "$encoded" >> "$tmp_file"; then
+      rm -f "$tmp_file"
+      log "State save: skipped (failed writing temporary file)"
+      return 0
+    fi
+    saved_count=$((saved_count + 1))
+  done
+
+  if install -m 600 "$tmp_file" "$state_file" 2>/dev/null; then
+    if [[ "$include_secrets" == "true" ]]; then
+      log "State save: ${mode} (${saved_count} key(s)) -> ${state_file}"
+    else
+      log "State scrub: removed secret keys (${saved_count} key(s)) -> ${state_file}"
+    fi
+  else
+    log "State save: failed to write ${state_file}"
+  fi
+
+  rm -f "$tmp_file"
+  return 0
+}
+
+save_state_checkpoint() {
+  save_install_state "true" "checkpoint"
 }
 
 ensure_passwordless_sudo() {
@@ -141,6 +342,49 @@ panel_wait_ready() {
     sleep 2
   done
   return 1
+}
+
+debug_permit_root_login_sources() {
+  local cfg=""
+  local source_line=""
+  local -a cfg_files=(/etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf)
+
+  log "Debug: effective PermitRootLogin from sshd -T"
+  /usr/sbin/sshd -T 2>/dev/null | grep -i '^permitrootlogin ' || true
+
+  log "Debug: conflicting PermitRootLogin directives in source files"
+  for cfg in "${cfg_files[@]}"; do
+    [[ -f "$cfg" ]] || continue
+    while IFS= read -r source_line; do
+      printf '  %s:%s\n' "$cfg" "$source_line" >&2
+    done < <(awk '
+      match($0,/^[[:space:]]*PermitRootLogin[[:space:]]+/) {
+        value=tolower($2)
+        if (value != "no") print NR ":" $0
+      }' "$cfg")
+  done
+}
+
+validate_sshd_root_login_no() {
+  local context="$1"
+  local label=""
+
+  if /usr/sbin/sshd -T | grep -qi '^permitrootlogin no$'; then
+    return 0
+  fi
+
+  [[ -n "$context" ]] && label=" (${context})"
+  log "SSH hardening validation failed${label}; collecting PermitRootLogin debug details"
+  debug_permit_root_login_sources
+  die "SSH hardening validation failed${label}: PermitRootLogin is not 'no'."
+}
+
+ensure_sshd_dropin_include() {
+  if grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf([[:space:]]|$)' /etc/ssh/sshd_config; then
+    return 0
+  fi
+  log "Adding missing Include /etc/ssh/sshd_config.d/*.conf to /etc/ssh/sshd_config"
+  printf '\nInclude /etc/ssh/sshd_config.d/*.conf\n' >> /etc/ssh/sshd_config
 }
 
 panel_login() {
@@ -440,7 +684,26 @@ cleanup_temp_files() {
   fi
 }
 
-trap cleanup_temp_files EXIT
+on_exit() {
+  local rc=$?
+  if (( rc != 0 )); then
+    save_install_state "true" "failure-exit"
+  else
+    if [[ "$STATE_KEEP_SECRETS_ON_SUCCESS" == "true" ]]; then
+      save_install_state "true" "success-exit"
+    else
+      save_install_state "false" "success-exit"
+    fi
+  fi
+  cleanup_temp_files
+  if (( rc != 0 )); then
+    report_failure_progress "$rc"
+  fi
+  trap - EXIT
+  exit "$rc"
+}
+
+trap on_exit EXIT
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   die "Run as root (sudo)."
@@ -457,33 +720,36 @@ fi
 # Interactive prompts are primary flow. Environment variables remain supported
 # for non-interactive automation.
 
-DOMAIN="${DOMAIN:-}"
-EMAIL="${EMAIL:-}"
-OPEN_TCP_PORTS="${OPEN_TCP_PORTS:-}"
-OPEN_UDP_PORTS="${OPEN_UDP_PORTS:-}"
-NEW_USER="${NEW_USER:-}"
-NEW_PASS="${NEW_PASS:-}"
-PANEL_ADMIN_USER="${PANEL_ADMIN_USER:-}"
-PANEL_ADMIN_PASS="${PANEL_ADMIN_PASS:-}"
-PANEL_CURRENT_USER="${PANEL_CURRENT_USER:-admin}"
-PANEL_CURRENT_PASS="${PANEL_CURRENT_PASS:-admin}"
-PANEL_CURRENT_2FA_CODE="${PANEL_CURRENT_2FA_CODE:-}"
-ENABLE_PANEL_2FA="${ENABLE_PANEL_2FA:-false}"
-AUTO_CREATE_INBOUND="${AUTO_CREATE_INBOUND:-false}"
-INBOUND_PORT="${INBOUND_PORT:-443}"
-INBOUND_REMARK="${INBOUND_REMARK:-}"
-INBOUND_CLIENT_EMAIL="${INBOUND_CLIENT_EMAIL:-}"
-INBOUND_SNI="${INBOUND_SNI:-}"
+load_install_state
+
+resolve_var_from_env_state_default DOMAIN ""
+resolve_var_from_env_state_default EMAIL ""
+resolve_var_from_env_state_default OPEN_TCP_PORTS ""
+resolve_var_from_env_state_default OPEN_UDP_PORTS ""
+resolve_var_from_env_state_default NEW_USER ""
+resolve_var_from_env_state_default NEW_PASS ""
+resolve_var_from_env_state_default PANEL_ADMIN_USER ""
+resolve_var_from_env_state_default PANEL_ADMIN_PASS ""
+resolve_var_from_env_state_default PANEL_CURRENT_USER "admin"
+resolve_var_from_env_state_default PANEL_CURRENT_PASS "admin"
+resolve_var_from_env_state_default PANEL_CURRENT_2FA_CODE ""
+resolve_var_from_env_state_default ENABLE_PANEL_2FA "false"
+resolve_var_from_env_state_default AUTO_CREATE_INBOUND "false"
+# Default inbound port is 443 unless INBOUND_PORT is explicitly provided.
+resolve_var_from_env_state_default INBOUND_PORT "443"
+resolve_var_from_env_state_default INBOUND_REMARK ""
+resolve_var_from_env_state_default INBOUND_CLIENT_EMAIL ""
+resolve_var_from_env_state_default INBOUND_SNI ""
 INBOUND_CLIENT_ID="${INBOUND_CLIENT_ID:-}"
 INBOUND_CLIENT_SUBID="${INBOUND_CLIENT_SUBID:-}"
-SSH_PORT="${SSH_PORT:-22}"
+resolve_var_from_env_state_default SSH_PORT "22"
 SSH_ALLOW_USERS="${SSH_ALLOW_USERS:-}"
 PANEL_DIR="${PANEL_DIR:-/opt/3x-ui}"
 IMAGE="${IMAGE:-ghcr.io/mhsanaei/3x-ui:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-3x-ui}"
 PANEL_PORT="${PANEL_PORT:-2053}"
 SUB_PORT="${SUB_PORT:-2096}"
-EXPOSE_PANEL_PUBLIC="${EXPOSE_PANEL_PUBLIC:-false}"
+resolve_var_from_env_state_default EXPOSE_PANEL_PUBLIC "false"
 PANEL_API_ORIGIN=""
 PANEL_BASE_PATH="/"
 PANEL_COOKIE_FILE=""
@@ -521,6 +787,7 @@ if [[ -t 0 ]]; then
     [[ -n "$DOMAIN" && "$DOMAIN" == *.* ]] && break
     printf 'Invalid domain. Enter a valid FQDN.\n' >&2
   done
+  save_state_checkpoint
 
   while :; do
     if [[ -n "$EMAIL" ]]; then
@@ -532,6 +799,7 @@ if [[ -t 0 ]]; then
     [[ -n "$EMAIL" && "$EMAIL" == *"@"* ]] && break
     printf 'Invalid email. Enter a valid address.\n' >&2
   done
+  save_state_checkpoint
 
   while :; do
     if [[ -n "$OPEN_TCP_PORTS" ]]; then
@@ -555,6 +823,7 @@ if [[ -t 0 ]]; then
     [[ -z "$tcp_invalid" ]] && break
     printf 'Invalid TCP port: %s\n' "$tcp_invalid" >&2
   done
+  save_state_checkpoint
 
   while :; do
     if [[ -n "$OPEN_UDP_PORTS" ]]; then
@@ -574,6 +843,7 @@ if [[ -t 0 ]]; then
     [[ -z "$udp_invalid" ]] && break
     printf 'Invalid UDP port: %s\n' "$udp_invalid" >&2
   done
+  save_state_checkpoint
 
   while :; do
     read -r -p "SSH port [${SSH_PORT}]: " input
@@ -581,15 +851,20 @@ if [[ -t 0 ]]; then
     is_valid_port "$SSH_PORT" && break
     printf 'Invalid SSH port. Use 1..65535.\n' >&2
   done
+  save_state_checkpoint
 
   while :; do
-    read -r -p "Expose 3x-ui panel ports publicly? [y/N]: " input
+    bool_hint="[y/N]"
+    [[ "$EXPOSE_PANEL_PUBLIC" == "true" ]] && bool_hint="[Y/n]"
+    read -r -p "Expose 3x-ui panel ports publicly? ${bool_hint}: " input
+    [[ -n "$input" ]] || input="$EXPOSE_PANEL_PUBLIC"
     EXPOSE_PANEL_PUBLIC="$(normalize_bool_choice "$input")" || {
       printf "Enter yes/y or no/n.\n" >&2
       continue
     }
     break
   done
+  save_state_checkpoint
 
   while :; do
     read -r -p "SSH username (optional, blank = auto-generate): " input
@@ -609,9 +884,11 @@ if [[ -t 0 ]]; then
     USER_EXPLICIT=true
     break
   done
+  save_state_checkpoint
 
   read -r -s -p "SSH password (optional; blank keeps existing password, auto-generates when missing/new): " NEW_PASS
   printf '\n'
+  save_state_checkpoint
 
   while :; do
     read -r -p "Current panel username for API fallback [${PANEL_CURRENT_USER}]: " input
@@ -619,6 +896,7 @@ if [[ -t 0 ]]; then
     [[ -n "$PANEL_CURRENT_USER" ]] && break
     printf 'Current panel username must not be empty.\n' >&2
   done
+  save_state_checkpoint
 
   if [[ -n "$PANEL_CURRENT_PASS" ]]; then
     read -r -s -p "Current panel password for API fallback (blank keeps existing value): " input
@@ -629,6 +907,7 @@ if [[ -t 0 ]]; then
     read -r -s -p "Current panel password for API fallback (optional): " PANEL_CURRENT_PASS
   fi
   printf '\n'
+  save_state_checkpoint
 
   if [[ -n "$PANEL_CURRENT_2FA_CODE" ]]; then
     read -r -p "Current panel 2FA code for API fallback (optional, blank keeps existing value): " input
@@ -638,6 +917,7 @@ if [[ -t 0 ]]; then
   else
     read -r -p "Current panel 2FA code for API fallback (optional): " PANEL_CURRENT_2FA_CODE
   fi
+  save_state_checkpoint
 
   while :; do
     read -r -p "Panel admin username (optional, blank = auto-generate): " input
@@ -645,35 +925,46 @@ if [[ -t 0 ]]; then
     [[ -z "$PANEL_ADMIN_USER" || "$PANEL_ADMIN_USER" =~ ^[A-Za-z0-9_.@-]{3,64}$ ]] && break
     printf 'Panel admin username must match ^[A-Za-z0-9_.@-]{3,64}$.\n' >&2
   done
+  save_state_checkpoint
 
   read -r -s -p "Panel admin password (optional, blank = auto-generate): " PANEL_ADMIN_PASS
   printf '\n'
+  save_state_checkpoint
 
   while :; do
-    read -r -p "Enable panel 2FA now? [y/N]: " input
+    bool_hint="[y/N]"
+    [[ "$ENABLE_PANEL_2FA" == "true" ]] && bool_hint="[Y/n]"
+    read -r -p "Enable panel 2FA now? ${bool_hint}: " input
+    [[ -n "$input" ]] || input="$ENABLE_PANEL_2FA"
     ENABLE_PANEL_2FA="$(normalize_bool_choice "$input")" || {
       printf "Enter yes/y or no/n.\n" >&2
       continue
     }
     break
   done
+  save_state_checkpoint
 
   while :; do
-    read -r -p "Auto-create VLESS+TLS TCP inbound now? [y/N]: " input
+    bool_hint="[y/N]"
+    [[ "$AUTO_CREATE_INBOUND" == "true" ]] && bool_hint="[Y/n]"
+    read -r -p "Auto-create VLESS+TLS TCP inbound now? ${bool_hint}: " input
+    [[ -n "$input" ]] || input="$AUTO_CREATE_INBOUND"
     AUTO_CREATE_INBOUND="$(normalize_bool_choice "$input")" || {
       printf "Enter yes/y or no/n.\n" >&2
       continue
     }
     break
   done
+  save_state_checkpoint
 
   if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
     while :; do
-      read -r -p "Auto inbound port [${INBOUND_PORT}]: " input
+      read -r -p "Auto inbound port [${INBOUND_PORT}] (default 443): " input
       INBOUND_PORT="${input:-$INBOUND_PORT}"
       is_valid_port "$INBOUND_PORT" && break
       printf 'Invalid inbound port. Use 1..65535.\n' >&2
     done
+    save_state_checkpoint
 
     if [[ -n "$INBOUND_REMARK" ]]; then
       read -r -p "Inbound remark [${INBOUND_REMARK}]: " input
@@ -682,6 +973,7 @@ if [[ -t 0 ]]; then
       read -r -p "Inbound remark [vless-tls-${DOMAIN}]: " input
       INBOUND_REMARK="${input:-vless-tls-${DOMAIN}}"
     fi
+    save_state_checkpoint
 
     if [[ -n "$INBOUND_CLIENT_EMAIL" ]]; then
       read -r -p "Inbound client email [${INBOUND_CLIENT_EMAIL}]: " input
@@ -690,6 +982,7 @@ if [[ -t 0 ]]; then
       read -r -p "Inbound client email [client@${DOMAIN}]: " input
       INBOUND_CLIENT_EMAIL="${input:-client@${DOMAIN}}"
     fi
+    save_state_checkpoint
 
     if [[ -n "$INBOUND_SNI" ]]; then
       read -r -p "Inbound TLS SNI/serverName [${INBOUND_SNI}]: " input
@@ -698,6 +991,7 @@ if [[ -t 0 ]]; then
       read -r -p "Inbound TLS SNI/serverName [${DOMAIN}]: " input
       INBOUND_SNI="${input:-${DOMAIN}}"
     fi
+    save_state_checkpoint
   fi
 fi
 
@@ -777,6 +1071,7 @@ log "Installing base packages"
 apt-get update -y
 apt-get install -y --no-install-recommends \
   adduser ca-certificates certbot curl fail2ban gnupg lsb-release openssl python3 sudo ufw
+mark_step_applied "packages"
 
 NAME_REGEX="$(read_name_regex)"
 regex_rc=0
@@ -856,13 +1151,16 @@ ensure_passwordless_sudo "$NEW_USER"
 if [[ "$USER_PREEXISTED" == "true" && "$USER_EXPLICIT" == "true" ]]; then
   log "Verified existing explicit user ${NEW_USER} has sudo group membership and passwordless sudo."
 fi
+mark_step_applied "user+sudo"
 
 if [[ -z "$SSH_ALLOW_USERS" ]]; then
   SSH_ALLOW_USERS="$NEW_USER"
 fi
 
 log "Applying SSH hardening"
-cat > /etc/ssh/sshd_config.d/99-3xui-hardening.conf <<EOF
+ensure_sshd_dropin_include
+rm -f /etc/ssh/sshd_config.d/99-3xui-hardening.conf
+cat > /etc/ssh/sshd_config.d/00-3xui-hardening.conf <<EOF
 Port ${SSH_PORT}
 PermitRootLogin no
 PasswordAuthentication yes
@@ -872,8 +1170,9 @@ AllowUsers ${SSH_ALLOW_USERS}
 EOF
 
 /usr/sbin/sshd -t
-/usr/sbin/sshd -T | grep -qi '^permitrootlogin no$' || die "SSH hardening validation failed: PermitRootLogin is not 'no'."
+validate_sshd_root_login_no "before restart"
 ROOT_SSH_DISABLED_CONFIRMED="pending (restart deferred until after ufw enable)"
+mark_step_applied "ssh hardening"
 
 log "Configuring fail2ban for SSH"
 cat > /etc/fail2ban/jail.d/sshd.local <<EOF
@@ -888,15 +1187,18 @@ banaction = ufw
 EOF
 systemctl enable --now fail2ban
 systemctl restart fail2ban
+mark_step_applied "fail2ban"
 
 log "Installing Docker"
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
 fi
 systemctl enable --now docker
+mark_step_applied "docker"
 if ! docker compose version >/dev/null 2>&1; then
   apt-get install -y docker-compose-plugin
 fi
+mark_step_applied "compose"
 if getent group docker >/dev/null 2>&1; then
   usermod -aG docker "$NEW_USER"
 fi
@@ -957,14 +1259,16 @@ if [[ "$EXPOSE_PANEL_PUBLIC" == "false" ]]; then
   fi
 fi
 ufw --force enable
+mark_step_applied "ufw"
 log "Applying pending SSH daemon restart after UFW enable"
 if systemctl list-unit-files | grep -q '^ssh\.service'; then
   systemctl restart ssh
 else
   systemctl restart sshd
 fi
-/usr/sbin/sshd -T | grep -qi '^permitrootlogin no$' || die "SSH hardening validation failed after restart: PermitRootLogin is not 'no'."
+validate_sshd_root_login_no "after restart"
 ROOT_SSH_DISABLED_CONFIRMED="yes"
+mark_step_applied "ssh restart"
 
 log "Issuing/refreshing Let's Encrypt certificate for ${DOMAIN}"
 certbot certonly \
@@ -988,6 +1292,7 @@ docker restart "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 EOF
 chmod 700 /usr/local/sbin/3xui-cert-deploy.sh
 /usr/local/sbin/3xui-cert-deploy.sh
+mark_step_applied "cert deploy"
 
 if [[ "$AUTO_CREATE_INBOUND" == "true" || "$ENABLE_PANEL_2FA" == "true" ]]; then
   log "Finalizing panel API configuration"
@@ -1003,6 +1308,7 @@ if [[ "$AUTO_CREATE_INBOUND" == "true" || "$ENABLE_PANEL_2FA" == "true" ]]; then
     log "Ensuring panel 2FA is enabled"
     panel_enable_two_factor
   fi
+  mark_step_applied "final api actions"
 fi
 
 cat > /etc/systemd/system/3xui-cert-renew.service <<'EOF'
@@ -1031,6 +1337,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now 3xui-cert-renew.timer
+mark_step_applied "renew timer"
 
 CRED_FILE="/root/3x-ui-bootstrap-credentials.txt"
 cat > "$CRED_FILE" <<EOF
