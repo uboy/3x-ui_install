@@ -15,6 +15,7 @@ instr_part_*.png
 # Temporary files
 tmp/
 temp/
+.scratchpad/
 *.tmp
 *.bak
 *.orig

@@ -8,11 +8,12 @@ STATE_FILE_DEFAULT="/root/.3x-ui-install.state"
 INSTALL_STATE_FILE="${INSTALL_STATE_FILE:-$STATE_FILE_DEFAULT}"
 STATE_KEEP_SECRETS_ON_SUCCESS="${STATE_KEEP_SECRETS_ON_SUCCESS:-true}"
 STATE_TRACKED_KEYS=(
-  DOMAIN EMAIL OPEN_TCP_PORTS OPEN_UDP_PORTS SSH_PORT EXPOSE_PANEL_PUBLIC
+  INSTALL_MODE ENDPOINT_MODE DOMAIN EMAIL OPEN_TCP_PORTS OPEN_UDP_PORTS SSH_PORT EXPOSE_PANEL_PUBLIC
   NEW_USER NEW_PASS PANEL_CURRENT_USER PANEL_CURRENT_PASS PANEL_CURRENT_2FA_CODE
   PANEL_ADMIN_USER PANEL_ADMIN_PASS ENABLE_PANEL_2FA AUTO_CREATE_INBOUND
   INBOUND_MODE INBOUND_PORT INBOUND_REMARK INBOUND_CLIENT_EMAIL INBOUND_DEST INBOUND_SNI PANEL_2FA_TOKEN
   PANEL_RESET_MODE PANEL_RESET_ACTION PANEL_RESET_RESULT PANEL_FACTORY_BACKUP_PATH
+  CERT_STRATEGY CERT_AUTO_RENEW_ENABLED CLIENT_PUBLIC_ENDPOINT
 )
 STATE_SECRET_KEYS=(
   NEW_PASS PANEL_CURRENT_PASS PANEL_CURRENT_2FA_CODE PANEL_ADMIN_PASS PANEL_2FA_TOKEN
@@ -84,6 +85,33 @@ is_valid_port() {
   (( p >= 1 && p <= 65535 ))
 }
 
+is_valid_ipv4() {
+  local ip="$1"
+  local IFS='.'
+  local -a octets=()
+  local o=""
+
+  [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  read -r -a octets <<< "$ip"
+  (( ${#octets[@]} == 4 )) || return 1
+  for o in "${octets[@]}"; do
+    [[ "$o" =~ ^[0-9]+$ ]] || return 1
+    (( o >= 0 && o <= 255 )) || return 1
+  done
+}
+
+is_loopback_ipv4() {
+  local ip="$1"
+  [[ "$ip" == 127.* ]]
+}
+
+get_listening_sshd_ports() {
+  local ports=""
+  ports="$(ss -ltnp 2>/dev/null | awk '/sshd/ {split($4,a,":"); p=a[length(a)]; if (p ~ /^[0-9]+$/) print p}' | sort -n -u | tr '\n' ' ' || true)"
+  ports="${ports%"${ports##*[![:space:]]}"}"
+  printf '%s\n' "$ports"
+}
+
 array_contains() {
   local needle="$1"
   shift
@@ -100,6 +128,26 @@ normalize_bool_choice() {
   case "$value" in
     true|yes|y|1) printf 'true\n' ;;
     false|no|n|0|'') printf 'false\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_install_mode() {
+  local value
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    simple|'') printf 'simple\n' ;;
+    super-secure|super_secure|supersecure) printf 'super-secure\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_endpoint_mode() {
+  local value
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    domain|'') printf 'domain\n' ;;
+    ip|ipv4) printf 'ip\n' ;;
     *) return 1 ;;
   esac
 }
@@ -248,6 +296,35 @@ save_install_state() {
 
 save_state_checkpoint() {
   save_install_state "true" "checkpoint"
+}
+
+certbot_failure_is_expected_for_ip() {
+  local output="$1"
+  grep -Eiq 'unsupported|invalid.*domain|must be a domain|rejectedIdentifier|requested name|dns-01|contains an invalid character|not a valid FQDN|not a FQDN' <<< "$output"
+}
+
+ensure_fallback_self_signed_cert() {
+  local common_name="$1"
+  local cert_name="$2"
+  local target_dir="${PANEL_DIR}/cert/live/${cert_name}"
+
+  if [[ -s "${target_dir}/fullchain.pem" && -s "${target_dir}/privkey.pem" ]]; then
+    log "Certificate fallback: reusing existing cert files at ${target_dir}"
+    return 0
+  fi
+
+  log "Certificate fallback: generating self-signed certificate for ${common_name}"
+  install -d -m 700 "$target_dir"
+  openssl req \
+    -x509 \
+    -nodes \
+    -newkey rsa:2048 \
+    -sha256 \
+    -days 365 \
+    -subj "/CN=${common_name}" \
+    -keyout "${target_dir}/privkey.pem" \
+    -out "${target_dir}/fullchain.pem" >/dev/null 2>&1
+  chmod 600 "${target_dir}/fullchain.pem" "${target_dir}/privkey.pem"
 }
 
 ensure_passwordless_sudo() {
@@ -883,6 +960,55 @@ print("UPDATE:"+json.dumps(obj,separators=(",",":")))' "$PANEL_2FA_TOKEN" <<< "$
   PANEL_2FA_EFFECTIVE="true"
 }
 
+panel_set_subscription_public_urls() {
+  local settings_response=""
+  local updated_json=""
+  local update_response=""
+  local public_endpoint="${CLIENT_PUBLIC_ENDPOINT:-$DOMAIN}"
+
+  settings_response="$(curl -ksS --max-time 10 \
+    -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" \
+    -X POST \
+    "${PANEL_API_ORIGIN}${PANEL_BASE_PATH}panel/setting/all" || true)"
+  [[ "$settings_response" == *'"success":true'* ]] || die "Failed to fetch panel settings for subscription URL update."
+
+  if ! updated_json="$(python3 -c 'import json,sys
+payload=json.load(sys.stdin)
+obj=payload.get("obj")
+if not isinstance(obj,dict):
+    raise SystemExit(1)
+domain=sys.argv[1]
+sub_port=int(sys.argv[2])
+def norm_path(path, default):
+    p=str(path or default).strip()
+    if not p:
+        p=default
+    if not p.startswith("/"):
+        p="/"+p
+    if not p.endswith("/"):
+        p=p+"/"
+    while "//" in p:
+        p=p.replace("//","/")
+    return p
+sub_path=norm_path(obj.get("subPath"), "/sub/")
+sub_json_path=norm_path(obj.get("subJsonPath"), "/json/")
+obj["subDomain"]=domain
+obj["subPort"]=sub_port
+obj["subURI"]=f"https://{domain}:{sub_port}{sub_path}"
+obj["subJsonURI"]=f"https://{domain}:{sub_port}{sub_json_path}"
+print(json.dumps(obj,separators=(",",":")))' "$public_endpoint" "$SUB_PORT" <<< "$settings_response" 2>/dev/null)"; then
+    die "Failed to build panel settings payload for subscription URL update."
+  fi
+
+  update_response="$(curl -ksS --max-time 10 \
+    -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" \
+    -H 'Content-Type: application/json' \
+    -X POST \
+    --data "$updated_json" \
+    "${PANEL_API_ORIGIN}${PANEL_BASE_PATH}panel/setting/update" || true)"
+  [[ "$update_response" == *'"success":true'* ]] || die "Failed to enforce subscription/public URLs in panel settings."
+}
+
 panel_ensure_vless_inbound() {
   local list_response=""
   local add_response=""
@@ -902,8 +1028,9 @@ panel_ensure_vless_inbound() {
   local settings_json=""
   local stream_json=""
   local sniffing_json='{"enabled":true,"destOverride":["http","tls","quic"]}'
-  local cert_file="/root/cert/live/${DOMAIN}/fullchain.pem"
-  local key_file="/root/cert/live/${DOMAIN}/privkey.pem"
+  local cert_name="${CERT_STORAGE_NAME:-$DOMAIN}"
+  local cert_file="/root/cert/live/${cert_name}/fullchain.pem"
+  local key_file="/root/cert/live/${cert_name}/privkey.pem"
   local expected_security=""
   local inbound_flow=""
 
@@ -1135,6 +1262,8 @@ fi
 
 load_install_state
 
+resolve_var_from_env_state_default INSTALL_MODE "simple"
+resolve_var_from_env_state_default ENDPOINT_MODE ""
 resolve_var_from_env_state_default DOMAIN ""
 resolve_var_from_env_state_default EMAIL ""
 resolve_var_from_env_state_default OPEN_TCP_PORTS "443"
@@ -1151,6 +1280,9 @@ PANEL_FACTORY_RESET_CONFIRM="${PANEL_FACTORY_RESET_CONFIRM:-}"
 resolve_var_from_env_state_default PANEL_RESET_ACTION "none"
 resolve_var_from_env_state_default PANEL_RESET_RESULT "not-attempted"
 resolve_var_from_env_state_default PANEL_FACTORY_BACKUP_PATH ""
+resolve_var_from_env_state_default CERT_STRATEGY "not-attempted"
+resolve_var_from_env_state_default CERT_AUTO_RENEW_ENABLED "false"
+resolve_var_from_env_state_default CLIENT_PUBLIC_ENDPOINT ""
 resolve_var_from_env_state_default ENABLE_PANEL_2FA "false"
 resolve_var_from_env_state_default AUTO_CREATE_INBOUND "false"
 resolve_var_from_env_state_default STRICT_SSH_EXTERNAL_CHECK "true"
@@ -1192,10 +1324,30 @@ SSH_HARDENING_CONF_PATH="/etc/ssh/sshd_config.d/00-3xui-hardening.conf"
 SSH_CONFIG_BACKUP_DIR=""
 SSH_ORIGINAL_UNIT=""
 SSH_EXTERNAL_PROBE_STATUS="not-run"
+CERT_STORAGE_NAME=""
+CERTBOT_CERT_SUCCESS="false"
+CERT_AUTO_RENEW_ENABLED="false"
+CERT_STRATEGY="not-attempted"
+CLIENT_PUBLIC_ENDPOINT=""
 
 USER_EXPLICIT=false
 if [[ -n "$NEW_USER" ]]; then
   USER_EXPLICIT=true
+fi
+
+if [[ -z "$ENDPOINT_MODE" ]]; then
+  if is_valid_ipv4 "$DOMAIN"; then
+    ENDPOINT_MODE="ip"
+  else
+    ENDPOINT_MODE="domain"
+  fi
+fi
+
+if ! INSTALL_MODE="$(normalize_install_mode "$INSTALL_MODE")"; then
+  INSTALL_MODE="simple"
+fi
+if ! ENDPOINT_MODE="$(normalize_endpoint_mode "$ENDPOINT_MODE")"; then
+  ENDPOINT_MODE="domain"
 fi
 
 NAME_REGEX_PROMPT="$(read_name_regex)"
@@ -1208,15 +1360,66 @@ fi
 if [[ -t 0 ]]; then
   log "Collecting interactive setup inputs"
 
+  printf 'Install mode options:\n' >&2
+  printf '  simple (default): just install/configure 3x-ui + VLESS setup\n' >&2
+  printf '  super-secure: include extra hardening (new user, SSH changes, root SSH disable, fail2ban hardening, etc.)\n' >&2
+  while :; do
+    read -r -p "Install mode [${INSTALL_MODE}] (simple/super-secure): " input
+    input="${input:-$INSTALL_MODE}"
+    INSTALL_MODE="$(normalize_install_mode "$input")" || {
+      printf "Enter one of: simple, super-secure.\n" >&2
+      continue
+    }
+    break
+  done
+  save_state_checkpoint
+
+  while :; do
+    read -r -p "Endpoint mode [${ENDPOINT_MODE}] (domain/ip): " input
+    input="${input:-$ENDPOINT_MODE}"
+    ENDPOINT_MODE="$(normalize_endpoint_mode "$input")" || {
+      printf "Enter one of: domain, ip.\n" >&2
+      continue
+    }
+    break
+  done
+  save_state_checkpoint
+
   while :; do
     if [[ -n "$DOMAIN" ]]; then
-      read -r -p "Domain (FQDN for this server) [$DOMAIN]: " input
+      if [[ "$ENDPOINT_MODE" == "ip" ]]; then
+        read -r -p "Server IP address [$DOMAIN]: " input
+      else
+        read -r -p "Domain (FQDN for this server) [$DOMAIN]: " input
+      fi
       DOMAIN="${input:-$DOMAIN}"
     else
-      read -r -p "Domain (FQDN for this server): " DOMAIN
+      if [[ "$ENDPOINT_MODE" == "ip" ]]; then
+        read -r -p "Server IP address: " DOMAIN
+      else
+        read -r -p "Domain (FQDN for this server): " DOMAIN
+      fi
     fi
-    [[ -n "$DOMAIN" && "$DOMAIN" == *.* ]] && break
-    printf 'Invalid domain. Enter a valid FQDN.\n' >&2
+    if [[ "$ENDPOINT_MODE" == "ip" ]]; then
+      is_valid_ipv4 "$DOMAIN" || {
+        printf 'Invalid IP. Enter a valid IPv4 address.\n' >&2
+        continue
+      }
+      is_loopback_ipv4 "$DOMAIN" && {
+        printf 'Loopback IP is not allowed for public client configs. Enter a non-127.x.x.x address.\n' >&2
+        continue
+      }
+      break
+    fi
+    [[ -n "$DOMAIN" && "$DOMAIN" == *.* ]] || {
+      printf 'Invalid domain. Enter a valid FQDN.\n' >&2
+      continue
+    }
+    is_valid_ipv4 "$DOMAIN" && {
+      printf 'That value is an IP. Switch endpoint mode to ip, or enter a real domain.\n' >&2
+      continue
+    }
+    break
   done
   save_state_checkpoint
 
@@ -1233,12 +1436,15 @@ if [[ -t 0 ]]; then
   save_state_checkpoint
 
   while :; do
-    read -r -p "Inbound TCP ports (space/comma separated) [${OPEN_TCP_PORTS}] (default 443, Enter keeps shown value): " input
-    OPEN_TCP_PORTS="${input:-$OPEN_TCP_PORTS}"
+    tcp_default="${OPEN_TCP_PORTS}"
+    [[ -n "${tcp_default//[[:space:]]/}" ]] || tcp_default="443"
+    read -r -p "Inbound TCP ports (space/comma separated) [${tcp_default}] (default 443): " input
+    OPEN_TCP_PORTS="${input:-$tcp_default}"
     OPEN_TCP_PORTS="${OPEN_TCP_PORTS//,/ }"
     [[ -n "${OPEN_TCP_PORTS//[[:space:]]/}" ]] || {
-      printf 'At least one TCP port is required.\n' >&2
-      continue
+      OPEN_TCP_PORTS="443"
+      log "Inbound TCP ports were empty; defaulting to 443."
+      break
     }
     tcp_invalid=""
     for p in $OPEN_TCP_PORTS; do
@@ -1249,6 +1455,68 @@ if [[ -t 0 ]]; then
     done
     [[ -z "$tcp_invalid" ]] && break
     printf 'Invalid TCP port: %s\n' "$tcp_invalid" >&2
+  done
+  save_state_checkpoint
+
+  if [[ "$INSTALL_MODE" == "super-secure" ]]; then
+    while :; do
+      read -r -p "SSH port [${SSH_PORT}]: " input
+      SSH_PORT="${input:-$SSH_PORT}"
+      is_valid_port "$SSH_PORT" && break
+      printf 'Invalid SSH port. Use 1..65535.\n' >&2
+    done
+    save_state_checkpoint
+
+    while :; do
+      if [[ -n "$NEW_USER" ]]; then
+        read -r -p "SSH username [${NEW_USER}] (Enter keeps, type 'auto' to auto-generate): " input
+        if [[ -z "$input" ]]; then
+          USER_EXPLICIT=true
+          break
+        fi
+        if [[ "${input,,}" == "auto" ]]; then
+          NEW_USER=""
+          USER_EXPLICIT=false
+          break
+        fi
+      else
+        read -r -p "SSH username (optional, blank = auto-generate): " input
+        if [[ -z "$input" ]]; then
+          USER_EXPLICIT=false
+          break
+        fi
+      fi
+      NEW_USER="$input"
+      [[ "$NEW_USER" =~ ^[a-z][-a-z0-9_]{0,31}$ ]] || {
+        printf "Username must match ^[a-z][-a-z0-9_]{0,31}$.\n" >&2
+        continue
+      }
+      printf '%s\n' "$NEW_USER" | grep -Eq -- "$NAME_REGEX_PROMPT" || {
+        printf "Username does not satisfy adduser NAME_REGEX (%s).\n" "$NAME_REGEX_PROMPT" >&2
+        continue
+      }
+      USER_EXPLICIT=true
+      break
+    done
+    save_state_checkpoint
+
+    read -r -s -p "SSH password (optional; blank keeps existing password, auto-generates when missing/new): " NEW_PASS
+    printf '\n'
+    save_state_checkpoint
+  else
+    log "Install mode is simple: skipping interactive SSH user/port hardening prompts."
+  fi
+
+  while :; do
+    bool_hint="[y/N]"
+    [[ "$EXPOSE_PANEL_PUBLIC" == "true" ]] && bool_hint="[Y/n]"
+    read -r -p "Expose 3x-ui panel ports publicly? ${bool_hint}: " input
+    [[ -n "$input" ]] || input="$EXPOSE_PANEL_PUBLIC"
+    EXPOSE_PANEL_PUBLIC="$(normalize_bool_choice "$input")" || {
+      printf "Enter yes/y or no/n.\n" >&2
+      continue
+    }
+    break
   done
   save_state_checkpoint
 
@@ -1270,64 +1538,6 @@ if [[ -t 0 ]]; then
     [[ -z "$udp_invalid" ]] && break
     printf 'Invalid UDP port: %s\n' "$udp_invalid" >&2
   done
-  save_state_checkpoint
-
-  while :; do
-    read -r -p "SSH port [${SSH_PORT}]: " input
-    SSH_PORT="${input:-$SSH_PORT}"
-    is_valid_port "$SSH_PORT" && break
-    printf 'Invalid SSH port. Use 1..65535.\n' >&2
-  done
-  save_state_checkpoint
-
-  while :; do
-    bool_hint="[y/N]"
-    [[ "$EXPOSE_PANEL_PUBLIC" == "true" ]] && bool_hint="[Y/n]"
-    read -r -p "Expose 3x-ui panel ports publicly? ${bool_hint}: " input
-    [[ -n "$input" ]] || input="$EXPOSE_PANEL_PUBLIC"
-    EXPOSE_PANEL_PUBLIC="$(normalize_bool_choice "$input")" || {
-      printf "Enter yes/y or no/n.\n" >&2
-      continue
-    }
-    break
-  done
-  save_state_checkpoint
-
-  while :; do
-    if [[ -n "$NEW_USER" ]]; then
-      read -r -p "SSH username [${NEW_USER}] (Enter keeps, type 'auto' to auto-generate): " input
-      if [[ -z "$input" ]]; then
-        USER_EXPLICIT=true
-        break
-      fi
-      if [[ "${input,,}" == "auto" ]]; then
-        NEW_USER=""
-        USER_EXPLICIT=false
-        break
-      fi
-    else
-      read -r -p "SSH username (optional, blank = auto-generate): " input
-      if [[ -z "$input" ]]; then
-        USER_EXPLICIT=false
-        break
-      fi
-    fi
-    NEW_USER="$input"
-    [[ "$NEW_USER" =~ ^[a-z][-a-z0-9_]{0,31}$ ]] || {
-      printf "Username must match ^[a-z][-a-z0-9_]{0,31}$.\n" >&2
-      continue
-    }
-    printf '%s\n' "$NEW_USER" | grep -Eq -- "$NAME_REGEX_PROMPT" || {
-      printf "Username does not satisfy adduser NAME_REGEX (%s).\n" "$NAME_REGEX_PROMPT" >&2
-      continue
-    }
-    USER_EXPLICIT=true
-    break
-  done
-  save_state_checkpoint
-
-  read -r -s -p "SSH password (optional; blank keeps existing password, auto-generates when missing/new): " NEW_PASS
-  printf '\n'
   save_state_checkpoint
 
   while :; do
@@ -1523,6 +1733,8 @@ fi
 
 OPEN_TCP_PORTS="${OPEN_TCP_PORTS//,/ }"
 OPEN_UDP_PORTS="${OPEN_UDP_PORTS//,/ }"
+INSTALL_MODE="$(normalize_install_mode "$INSTALL_MODE" || true)"
+ENDPOINT_MODE="$(normalize_endpoint_mode "$ENDPOINT_MODE" || true)"
 EXPOSE_PANEL_PUBLIC="$(normalize_bool_choice "$EXPOSE_PANEL_PUBLIC" || true)"
 ENABLE_PANEL_2FA="$(normalize_bool_choice "$ENABLE_PANEL_2FA" || true)"
 AUTO_CREATE_INBOUND="$(normalize_bool_choice "$AUTO_CREATE_INBOUND" || true)"
@@ -1531,14 +1743,28 @@ PANEL_RESET_MODE="$(printf '%s' "$PANEL_RESET_MODE" | tr '[:upper:]' '[:lower:]'
 INBOUND_MODE="$(printf '%s' "$INBOUND_MODE" | tr '[:upper:]' '[:lower:]')"
 
 missing=()
-for v in DOMAIN EMAIL OPEN_TCP_PORTS; do
+for v in DOMAIN EMAIL; do
   [[ -n "${!v}" ]] || missing+=("$v")
 done
 if (( ${#missing[@]} > 0 )); then
-  die "Missing required env var(s): ${missing[*]}. Example: DOMAIN=vpn.example.com EMAIL=ops@example.com OPEN_TCP_PORTS='443 8443'"
+  die "Missing required env var(s): ${missing[*]}. Example: DOMAIN=vpn.example.com EMAIL=ops@example.com"
 fi
 
-[[ "$DOMAIN" == *.* ]] || die "DOMAIN must be a valid FQDN."
+case "$INSTALL_MODE" in
+  simple|super-secure) ;;
+  *) die "INSTALL_MODE must be one of: simple, super-secure." ;;
+esac
+case "$ENDPOINT_MODE" in
+  domain|ip) ;;
+  *) die "ENDPOINT_MODE must be one of: domain, ip." ;;
+esac
+if [[ "$ENDPOINT_MODE" == "domain" ]]; then
+  [[ "$DOMAIN" == *.* ]] || die "DOMAIN must be a valid FQDN when ENDPOINT_MODE=domain."
+  is_valid_ipv4 "$DOMAIN" && die "DOMAIN looks like an IP address; set ENDPOINT_MODE=ip for IP-based setup."
+else
+  is_valid_ipv4 "$DOMAIN" || die "DOMAIN must be a valid IPv4 address when ENDPOINT_MODE=ip."
+  is_loopback_ipv4 "$DOMAIN" && die "Loopback IPv4 endpoints are not supported for public client configs; use a public server IP."
+fi
 [[ "$EMAIL" == *"@"* ]] || die "EMAIL must be a valid email address."
 is_valid_port "$SSH_PORT" || die "SSH_PORT must be 1..65535."
 is_valid_port "$PANEL_PORT" || die "PANEL_PORT must be 1..65535."
@@ -1583,6 +1809,8 @@ case "$PANEL_RESET_MODE" in
   none|2fa|factory) ;;
   *) die "PANEL_RESET_MODE must be one of: none, 2fa, factory." ;;
 esac
+CERT_STORAGE_NAME="$DOMAIN"
+CLIENT_PUBLIC_ENDPOINT="$DOMAIN"
 save_state_checkpoint
 
 if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
@@ -1602,7 +1830,8 @@ if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
 fi
 
 if [[ -z "${OPEN_TCP_PORTS//[[:space:]]/}" ]]; then
-  die "OPEN_TCP_PORTS must contain at least one TCP inbound port (example: '443')."
+  OPEN_TCP_PORTS="443"
+  log "OPEN_TCP_PORTS empty; defaulting to 443."
 fi
 
 declare -a TCP_PORTS=()
@@ -1638,6 +1867,12 @@ if [[ "$regex_rc" -eq 2 ]]; then
   NAME_REGEX='^[a-z][-a-z0-9_]*$'
 fi
 SAFE_USER_REGEX='^[a-z][-a-z0-9_]{0,31}$'
+SSH_PASSWORD_CHANGED="false"
+SSH_PASSWORD_DISPLAY="not-applied (simple mode)"
+SSH_PASSWORD_CRED_VALUE="NOT_APPLIED_SIMPLE_MODE"
+ROOT_SSH_DISABLED_CONFIRMED="not-applied (simple mode)"
+SSH_ORIGINAL_UNIT="not-applied"
+SSH_EXTERNAL_PROBE_STATUS="not-run (simple mode)"
 
 username_is_valid() {
   local name="$1"
@@ -1661,72 +1896,72 @@ generate_username() {
   return 1
 }
 
-if [[ -z "$NEW_USER" ]]; then
-  NEW_USER="$(generate_username)" || die "Failed to auto-generate a valid username for NAME_REGEX=${NAME_REGEX}."
-fi
-username_is_valid "$NEW_USER" || die "NEW_USER '$NEW_USER' failed validation (safe policy + NAME_REGEX=${NAME_REGEX})."
+if [[ "$INSTALL_MODE" == "super-secure" ]]; then
+  if [[ -z "$NEW_USER" ]]; then
+    NEW_USER="$(generate_username)" || die "Failed to auto-generate a valid username for NAME_REGEX=${NAME_REGEX}."
+  fi
+  username_is_valid "$NEW_USER" || die "NEW_USER '$NEW_USER' failed validation (safe policy + NAME_REGEX=${NAME_REGEX})."
 
-USER_PREEXISTED=false
-if id -u "$NEW_USER" >/dev/null 2>&1; then
-  USER_PREEXISTED=true
-fi
+  USER_PREEXISTED=false
+  if id -u "$NEW_USER" >/dev/null 2>&1; then
+    USER_PREEXISTED=true
+  fi
 
-if [[ "$USER_PREEXISTED" == "false" ]]; then
-  log "Creating user $NEW_USER"
-  adduser --disabled-password --gecos "" "$NEW_USER"
-else
-  log "User $NEW_USER already exists (keeping existing account)"
-fi
+  if [[ "$USER_PREEXISTED" == "false" ]]; then
+    log "Creating user $NEW_USER"
+    adduser --disabled-password --gecos "" "$NEW_USER"
+  else
+    log "User $NEW_USER already exists (keeping existing account)"
+  fi
 
-SSH_PASSWORD_CHANGED="false"
-SSH_PASSWORD_DISPLAY="unchanged (existing user password retained)"
-SSH_PASSWORD_CRED_VALUE="UNCHANGED_EXISTING_USER"
-if [[ -n "$NEW_PASS" ]]; then
-  [[ "$NEW_PASS" != *$'\n'* ]] || die "NEW_PASS must not contain newline characters."
-  NEW_PASS_HASH="$(printf '%s' "$NEW_PASS" | openssl passwd -6 -stdin)"
-  usermod --password "$NEW_PASS_HASH" "$NEW_USER"
-  SSH_PASSWORD_CHANGED="true"
-  SSH_PASSWORD_DISPLAY="$NEW_PASS"
-  SSH_PASSWORD_CRED_VALUE="$NEW_PASS"
-elif [[ "$USER_PREEXISTED" == "false" ]]; then
-  NEW_PASS="$(generate_random_fixed 24 'A-Za-z0-9+/')" || die "Failed to auto-generate NEW_PASS."
-  [[ -n "$NEW_PASS" && ${#NEW_PASS} -eq 24 ]] || die "Auto-generated NEW_PASS is invalid."
-  NEW_PASS_HASH="$(printf '%s' "$NEW_PASS" | openssl passwd -6 -stdin)"
-  usermod --password "$NEW_PASS_HASH" "$NEW_USER"
-  SSH_PASSWORD_CHANGED="true"
-  SSH_PASSWORD_DISPLAY="$NEW_PASS"
-  SSH_PASSWORD_CRED_VALUE="$NEW_PASS"
-elif ! user_has_usable_password "$NEW_USER"; then
-  NEW_PASS="$(generate_random_fixed 24 'A-Za-z0-9+/')" || die "Failed to auto-generate NEW_PASS."
-  [[ -n "$NEW_PASS" && ${#NEW_PASS} -eq 24 ]] || die "Auto-generated NEW_PASS is invalid."
-  NEW_PASS_HASH="$(printf '%s' "$NEW_PASS" | openssl passwd -6 -stdin)"
-  usermod --password "$NEW_PASS_HASH" "$NEW_USER"
-  SSH_PASSWORD_CHANGED="true"
-  SSH_PASSWORD_DISPLAY="$NEW_PASS"
-  SSH_PASSWORD_CRED_VALUE="$NEW_PASS"
-  log "Existing user ${NEW_USER} had no usable password; generated and applied a new strong password."
-else
-  log "Keeping existing SSH password for pre-existing user ${NEW_USER} (no new password provided)."
-fi
+  SSH_PASSWORD_DISPLAY="unchanged (existing user password retained)"
+  SSH_PASSWORD_CRED_VALUE="UNCHANGED_EXISTING_USER"
+  if [[ -n "$NEW_PASS" ]]; then
+    [[ "$NEW_PASS" != *$'\n'* ]] || die "NEW_PASS must not contain newline characters."
+    NEW_PASS_HASH="$(printf '%s' "$NEW_PASS" | openssl passwd -6 -stdin)"
+    usermod --password "$NEW_PASS_HASH" "$NEW_USER"
+    SSH_PASSWORD_CHANGED="true"
+    SSH_PASSWORD_DISPLAY="$NEW_PASS"
+    SSH_PASSWORD_CRED_VALUE="$NEW_PASS"
+  elif [[ "$USER_PREEXISTED" == "false" ]]; then
+    NEW_PASS="$(generate_random_fixed 24 'A-Za-z0-9+/')" || die "Failed to auto-generate NEW_PASS."
+    [[ -n "$NEW_PASS" && ${#NEW_PASS} -eq 24 ]] || die "Auto-generated NEW_PASS is invalid."
+    NEW_PASS_HASH="$(printf '%s' "$NEW_PASS" | openssl passwd -6 -stdin)"
+    usermod --password "$NEW_PASS_HASH" "$NEW_USER"
+    SSH_PASSWORD_CHANGED="true"
+    SSH_PASSWORD_DISPLAY="$NEW_PASS"
+    SSH_PASSWORD_CRED_VALUE="$NEW_PASS"
+  elif ! user_has_usable_password "$NEW_USER"; then
+    NEW_PASS="$(generate_random_fixed 24 'A-Za-z0-9+/')" || die "Failed to auto-generate NEW_PASS."
+    [[ -n "$NEW_PASS" && ${#NEW_PASS} -eq 24 ]] || die "Auto-generated NEW_PASS is invalid."
+    NEW_PASS_HASH="$(printf '%s' "$NEW_PASS" | openssl passwd -6 -stdin)"
+    usermod --password "$NEW_PASS_HASH" "$NEW_USER"
+    SSH_PASSWORD_CHANGED="true"
+    SSH_PASSWORD_DISPLAY="$NEW_PASS"
+    SSH_PASSWORD_CRED_VALUE="$NEW_PASS"
+    log "Existing user ${NEW_USER} had no usable password; generated and applied a new strong password."
+  else
+    log "Keeping existing SSH password for pre-existing user ${NEW_USER} (no new password provided)."
+  fi
 
-usermod -aG sudo "$NEW_USER"
-ensure_passwordless_sudo "$NEW_USER"
-if [[ "$USER_PREEXISTED" == "true" && "$USER_EXPLICIT" == "true" ]]; then
-  log "Verified existing explicit user ${NEW_USER} has sudo group membership and passwordless sudo."
-fi
-mark_step_applied "user+sudo"
+  usermod -aG sudo "$NEW_USER"
+  ensure_passwordless_sudo "$NEW_USER"
+  if [[ "$USER_PREEXISTED" == "true" && "$USER_EXPLICIT" == "true" ]]; then
+    log "Verified existing explicit user ${NEW_USER} has sudo group membership and passwordless sudo."
+  fi
+  mark_step_applied "user+sudo"
 
-if [[ -z "$SSH_ALLOW_USERS" ]]; then
-  SSH_ALLOW_USERS="$NEW_USER"
-fi
+  if [[ -z "$SSH_ALLOW_USERS" ]]; then
+    SSH_ALLOW_USERS="$NEW_USER"
+  fi
 
-SSH_ORIGINAL_UNIT="$(detect_ssh_unit)" || die "Could not detect SSH systemd unit (expected ssh.service or sshd.service)."
-backup_ssh_config_for_rollback
+  SSH_ORIGINAL_UNIT="$(detect_ssh_unit)" || die "Could not detect SSH systemd unit (expected ssh.service or sshd.service)."
+  backup_ssh_config_for_rollback
 
-log "Applying SSH hardening"
-ensure_sshd_dropin_include
-rm -f /etc/ssh/sshd_config.d/99-3xui-hardening.conf
-cat > "$SSH_HARDENING_CONF_PATH" <<EOF
+  log "Applying SSH hardening"
+  ensure_sshd_dropin_include
+  rm -f /etc/ssh/sshd_config.d/99-3xui-hardening.conf
+  cat > "$SSH_HARDENING_CONF_PATH" <<EOF
 Port ${SSH_PORT}
 PermitRootLogin no
 PasswordAuthentication yes
@@ -1735,13 +1970,13 @@ KbdInteractiveAuthentication no
 AllowUsers ${SSH_ALLOW_USERS}
 EOF
 
-/usr/sbin/sshd -t
-validate_sshd_root_login_no "before restart"
-ROOT_SSH_DISABLED_CONFIRMED="pending (final apply deferred until setup completion)"
-mark_step_applied "ssh hardening"
+  /usr/sbin/sshd -t
+  validate_sshd_root_login_no "before restart"
+  ROOT_SSH_DISABLED_CONFIRMED="pending (final apply deferred until setup completion)"
+  mark_step_applied "ssh hardening"
 
-log "Configuring fail2ban for SSH"
-cat > /etc/fail2ban/jail.d/sshd.local <<EOF
+  log "Configuring fail2ban for SSH"
+  cat > /etc/fail2ban/jail.d/sshd.local <<EOF
 [sshd]
 enabled = true
 backend = systemd
@@ -1751,9 +1986,12 @@ findtime = 10m
 bantime = 1h
 banaction = ufw
 EOF
-systemctl enable --now fail2ban
-systemctl restart fail2ban
-mark_step_applied "fail2ban"
+  systemctl enable --now fail2ban
+  systemctl restart fail2ban
+  mark_step_applied "fail2ban"
+else
+  log "Install mode simple: skipping user creation, SSH hardening, and fail2ban host hardening."
+fi
 
 log "Installing Docker"
 if ! command -v docker >/dev/null 2>&1; then
@@ -1765,7 +2003,7 @@ if ! docker compose version >/dev/null 2>&1; then
   apt-get install -y docker-compose-plugin
 fi
 mark_step_applied "compose"
-if getent group docker >/dev/null 2>&1; then
+if [[ "$INSTALL_MODE" == "super-secure" ]] && getent group docker >/dev/null 2>&1; then
   usermod -aG docker "$NEW_USER"
 fi
 
@@ -1807,6 +2045,13 @@ log "Configuring UFW"
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow "${SSH_PORT}/tcp"
+EXISTING_SSH_PORTS="$(get_listening_sshd_ports)"
+if [[ -n "${EXISTING_SSH_PORTS//[[:space:]]/}" ]]; then
+  for p in $EXISTING_SSH_PORTS; do
+    is_valid_port "$p" || continue
+    ufw allow "${p}/tcp"
+  done
+fi
 ufw allow 80/tcp
 ufw allow 443/tcp
 for p in "${TCP_PORTS[@]}"; do
@@ -1827,51 +2072,74 @@ fi
 ufw --force enable
 mark_step_applied "ufw"
 
-log "Issuing/refreshing Let's Encrypt certificate for ${DOMAIN}"
-certbot certonly \
+CERTBOT_OUTPUT_FILE="$(mktemp /tmp/3xui-certbot.XXXXXX)"
+log "Issuing/refreshing Let's Encrypt certificate for ${DOMAIN} (endpoint mode=${ENDPOINT_MODE})"
+if certbot certonly \
   --standalone \
   --non-interactive \
   --agree-tos \
   --email "$EMAIL" \
   --keep-until-expiring \
-  -d "$DOMAIN"
+  -d "$DOMAIN" >"$CERTBOT_OUTPUT_FILE" 2>&1; then
+  CERTBOT_CERT_SUCCESS="true"
+  CERT_STRATEGY="letsencrypt-${ENDPOINT_MODE}"
 
-log "Installing cert deploy hook"
-cat > /usr/local/sbin/3xui-cert-deploy.sh <<EOF
+  log "Installing cert deploy hook"
+  cat > /usr/local/sbin/3xui-cert-deploy.sh <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-SRC_DIR="/etc/letsencrypt/live/${DOMAIN}"
-DST_DIR="${PANEL_DIR}/cert/live/${DOMAIN}"
+SRC_DIR="/etc/letsencrypt/live/${CERT_STORAGE_NAME}"
+DST_DIR="${PANEL_DIR}/cert/live/${CERT_STORAGE_NAME}"
 install -d -m 700 "\$DST_DIR"
 install -m 600 "\$SRC_DIR/fullchain.pem" "\$DST_DIR/fullchain.pem"
 install -m 600 "\$SRC_DIR/privkey.pem" "\$DST_DIR/privkey.pem"
 docker restart "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 EOF
-chmod 700 /usr/local/sbin/3xui-cert-deploy.sh
-/usr/local/sbin/3xui-cert-deploy.sh
-mark_step_applied "cert deploy"
-
-if [[ "$AUTO_CREATE_INBOUND" == "true" || "$ENABLE_PANEL_2FA" == "true" ]]; then
-  log "Finalizing panel API configuration"
-  panel_wait_ready || die "3x-ui panel did not recover after certificate deployment."
-  panel_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$PANEL_CURRENT_2FA_CODE" || die "Panel login failed before API finalization."
-  if [[ "$PANEL_RESET_MODE" == "factory" && "$PANEL_RESET_RESULT" != "success" ]]; then
-    die "PANEL_RESET_MODE=factory requires PANEL_RESET_RESULT=success before final API inbound stage."
+  chmod 700 /usr/local/sbin/3xui-cert-deploy.sh
+  /usr/local/sbin/3xui-cert-deploy.sh
+  mark_step_applied "cert deploy"
+else
+  CERTBOT_CERT_SUCCESS="false"
+  certbot_output="$(cat "$CERTBOT_OUTPUT_FILE" 2>/dev/null || true)"
+  if [[ "$ENDPOINT_MODE" == "ip" ]]; then
+    if certbot_failure_is_expected_for_ip "$certbot_output"; then
+      CERT_STRATEGY="self-signed-fallback (ip-mode expected LE limitation)"
+      log "Let's Encrypt IP issuance is unsupported in this mode; falling back to self-signed certificate."
+    else
+      CERT_STRATEGY="self-signed-fallback (ip-mode LE error)"
+      log "Let's Encrypt failed in IP mode; falling back to self-signed certificate."
+    fi
+    ensure_fallback_self_signed_cert "$DOMAIN" "$CERT_STORAGE_NAME"
+    docker restart "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    mark_step_applied "cert deploy"
+  else
+    die "Let's Encrypt certificate issuance failed for domain ${DOMAIN}. Re-run after fixing DNS/port 80/443 reachability."
   fi
+fi
+rm -f "$CERTBOT_OUTPUT_FILE"
 
-  if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
-    log "Ensuring requested VLESS inbound exists (mode=${INBOUND_MODE})"
-    panel_ensure_vless_inbound
-  fi
+log "Finalizing panel API configuration"
+panel_wait_ready || die "3x-ui panel did not recover after certificate deployment."
+panel_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$PANEL_CURRENT_2FA_CODE" || die "Panel login failed before API finalization."
+if [[ "$PANEL_RESET_MODE" == "factory" && "$PANEL_RESET_RESULT" != "success" ]]; then
+  die "PANEL_RESET_MODE=factory requires PANEL_RESET_RESULT=success before final API inbound stage."
+fi
+log "Enforcing external subscription URLs for endpoint ${CLIENT_PUBLIC_ENDPOINT}"
+panel_set_subscription_public_urls
 
-  if [[ "$ENABLE_PANEL_2FA" == "true" ]]; then
-    log "Ensuring panel 2FA is enabled"
-    panel_enable_two_factor
-  fi
-  mark_step_applied "final api actions"
+if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
+  log "Ensuring requested VLESS inbound exists (mode=${INBOUND_MODE})"
+  panel_ensure_vless_inbound
 fi
 
-cat > /etc/systemd/system/3xui-cert-renew.service <<'EOF'
+if [[ "$ENABLE_PANEL_2FA" == "true" ]]; then
+  log "Ensuring panel 2FA is enabled"
+  panel_enable_two_factor
+fi
+mark_step_applied "final api actions"
+
+if [[ "$CERTBOT_CERT_SUCCESS" == "true" ]]; then
+  cat > /etc/systemd/system/3xui-cert-renew.service <<'EOF'
 [Unit]
 Description=Renew Let's Encrypt certificates for 3x-ui and deploy to /opt/3x-ui/cert
 Wants=network-online.target
@@ -1882,7 +2150,7 @@ Type=oneshot
 ExecStart=/usr/bin/certbot renew --quiet --deploy-hook /usr/local/sbin/3xui-cert-deploy.sh
 EOF
 
-cat > /etc/systemd/system/3xui-cert-renew.timer <<'EOF'
+  cat > /etc/systemd/system/3xui-cert-renew.timer <<'EOF'
 [Unit]
 Description=Twice-daily certificate renewal for 3x-ui
 
@@ -1895,59 +2163,71 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now 3xui-cert-renew.timer
-mark_step_applied "renew timer"
-
-log "WARNING: Final SSH apply will restart ${SSH_ORIGINAL_UNIT} and switch SSH to port ${SSH_PORT} for user ${NEW_USER}."
-if [[ "$SSH_PASSWORD_CHANGED" == "true" ]]; then
-  log "WARNING: SSH password changed for ${NEW_USER}; ensure it is saved before reconnect."
+  systemctl daemon-reload
+  systemctl enable --now 3xui-cert-renew.timer
+  CERT_AUTO_RENEW_ENABLED="true"
+  mark_step_applied "renew timer"
 else
-  log "WARNING: SSH password for ${NEW_USER} was not changed; reconnect will use existing password."
-fi
-log "WARNING: Keep this session open, then reconnect with: ssh -p ${SSH_PORT} ${NEW_USER}@<SERVER_IP>"
-if ! precheck_ssh_firewall_before_apply; then
-  die "Refusing final SSH apply: UFW is not active or missing allow rule for ${SSH_PORT}/tcp."
+  CERT_AUTO_RENEW_ENABLED="false"
+  systemctl disable --now 3xui-cert-renew.timer >/dev/null 2>&1 || true
+  log "Certificate auto-renew disabled because active certificate strategy is '${CERT_STRATEGY}'."
 fi
 
-log "Applying final SSH daemon restart (${SSH_ORIGINAL_UNIT})"
-if ! systemctl restart "$SSH_ORIGINAL_UNIT"; then
-  rollback_ssh_apply_or_die "Failed to restart SSH unit ${SSH_ORIGINAL_UNIT}"
-fi
-
-log "Waiting for local SSH listener on port ${SSH_PORT}"
-if ! wait_for_local_ssh_listener 20 1; then
-  rollback_ssh_apply_or_die "Local SSH listener check failed on port ${SSH_PORT}"
-fi
-log "Local SSH listener is active on port ${SSH_PORT}"
-
-if [[ "$STRICT_SSH_EXTERNAL_CHECK" == "true" ]]; then
-  SSH_EXTERNAL_PROBE_IP="$(curl -4fsS --max-time 8 https://api.ipify.org || true)"
-  log "Running strict external SSH probe to ${SSH_EXTERNAL_PROBE_IP:-<unknown>}:${SSH_PORT}"
-  if [[ -z "$SSH_EXTERNAL_PROBE_IP" ]]; then
-    SSH_EXTERNAL_PROBE_STATUS="failed (public IPv4 detection failed)"
-    rollback_ssh_apply_or_die "Strict external SSH probe failed: could not detect public IPv4"
+if [[ "$INSTALL_MODE" == "super-secure" ]]; then
+  log "WARNING: Final SSH apply will restart ${SSH_ORIGINAL_UNIT} and switch SSH to port ${SSH_PORT} for user ${NEW_USER}."
+  if [[ "$SSH_PASSWORD_CHANGED" == "true" ]]; then
+    log "WARNING: SSH password changed for ${NEW_USER}; ensure it is saved before reconnect."
+  else
+    log "WARNING: SSH password for ${NEW_USER} was not changed; reconnect will use existing password."
   fi
-  if ! probe_public_ssh_port "$SSH_EXTERNAL_PROBE_IP" 5; then
-    SSH_EXTERNAL_PROBE_STATUS="failed (${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT})"
-    rollback_ssh_apply_or_die "Strict external SSH probe failed for ${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT}"
+  log "WARNING: Keep this session open, then reconnect with: ssh -p ${SSH_PORT} ${NEW_USER}@<SERVER_IP>"
+  if ! precheck_ssh_firewall_before_apply; then
+    die "Refusing final SSH apply: UFW is not active or missing allow rule for ${SSH_PORT}/tcp."
   fi
-  SSH_EXTERNAL_PROBE_STATUS="passed (${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT})"
-  log "Strict external SSH probe passed for ${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT}"
-else
-  SSH_EXTERNAL_PROBE_STATUS="skipped (STRICT_SSH_EXTERNAL_CHECK=false)"
-  log "Strict external SSH probe disabled; skipping public probe."
-fi
 
-if ! validate_sshd_root_login_no "after restart" "return"; then
-  rollback_ssh_apply_or_die "SSH hardening post-check failed after restarting ${SSH_ORIGINAL_UNIT}"
+  log "Applying final SSH daemon restart (${SSH_ORIGINAL_UNIT})"
+  if ! systemctl restart "$SSH_ORIGINAL_UNIT"; then
+    rollback_ssh_apply_or_die "Failed to restart SSH unit ${SSH_ORIGINAL_UNIT}"
+  fi
+
+  log "Waiting for local SSH listener on port ${SSH_PORT}"
+  if ! wait_for_local_ssh_listener 20 1; then
+    rollback_ssh_apply_or_die "Local SSH listener check failed on port ${SSH_PORT}"
+  fi
+  log "Local SSH listener is active on port ${SSH_PORT}"
+
+  if [[ "$STRICT_SSH_EXTERNAL_CHECK" == "true" ]]; then
+    SSH_EXTERNAL_PROBE_IP="$(curl -4fsS --max-time 8 https://api.ipify.org || true)"
+    log "Running strict external SSH probe to ${SSH_EXTERNAL_PROBE_IP:-<unknown>}:${SSH_PORT}"
+    if [[ -z "$SSH_EXTERNAL_PROBE_IP" ]]; then
+      SSH_EXTERNAL_PROBE_STATUS="failed (public IPv4 detection failed)"
+      rollback_ssh_apply_or_die "Strict external SSH probe failed: could not detect public IPv4"
+    fi
+    if ! probe_public_ssh_port "$SSH_EXTERNAL_PROBE_IP" 5; then
+      SSH_EXTERNAL_PROBE_STATUS="failed (${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT})"
+      rollback_ssh_apply_or_die "Strict external SSH probe failed for ${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT}"
+    fi
+    SSH_EXTERNAL_PROBE_STATUS="passed (${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT})"
+    log "Strict external SSH probe passed for ${SSH_EXTERNAL_PROBE_IP}:${SSH_PORT}"
+  else
+    SSH_EXTERNAL_PROBE_STATUS="skipped (STRICT_SSH_EXTERNAL_CHECK=false)"
+    log "Strict external SSH probe disabled; skipping public probe."
+  fi
+
+  if ! validate_sshd_root_login_no "after restart" "return"; then
+    rollback_ssh_apply_or_die "SSH hardening post-check failed after restarting ${SSH_ORIGINAL_UNIT}"
+  fi
+  ROOT_SSH_DISABLED_CONFIRMED="yes"
+  cleanup_ssh_config_backup
+  mark_step_applied "ssh restart"
 fi
-ROOT_SSH_DISABLED_CONFIRMED="yes"
-cleanup_ssh_config_backup
-mark_step_applied "ssh restart"
 
 CRED_FILE="/root/3x-ui-bootstrap-credentials.txt"
 cat > "$CRED_FILE" <<EOF
+INSTALL_MODE=${INSTALL_MODE}
+ENDPOINT_MODE=${ENDPOINT_MODE}
+ENDPOINT_VALUE=${DOMAIN}
+CLIENT_PUBLIC_ENDPOINT=${CLIENT_PUBLIC_ENDPOINT}
 SSH_USER=${NEW_USER}
 SSH_PASSWORD=${SSH_PASSWORD_CRED_VALUE}
 SSH_PASSWORD_CHANGED=${SSH_PASSWORD_CHANGED}
@@ -1973,6 +2253,8 @@ AUTO_INBOUND_CLIENT_EMAIL=${INBOUND_CLIENT_EMAIL}
 AUTO_INBOUND_SNI=${INBOUND_SNI}
 AUTO_INBOUND_DEST=${INBOUND_DEST}
 DOMAIN=${DOMAIN}
+CERT_STRATEGY=${CERT_STRATEGY}
+CERT_AUTO_RENEW_ENABLED=${CERT_AUTO_RENEW_ENABLED}
 PANEL_DIR=${PANEL_DIR}
 ROOT_SSH_DISABLED_CONFIRMED=${ROOT_SSH_DISABLED_CONFIRMED}
 EOF
@@ -1980,16 +2262,20 @@ chmod 600 "$CRED_FILE"
 
 log "Running post-install checks"
 systemctl is-active --quiet docker || die "docker is not active"
-systemctl is-active --quiet fail2ban || die "fail2ban is not active"
-systemctl is-active --quiet 3xui-cert-renew.timer || die "3xui-cert-renew.timer is not active"
+if [[ "$INSTALL_MODE" == "super-secure" ]]; then
+  systemctl is-active --quiet fail2ban || die "fail2ban is not active"
+fi
+if [[ "$CERT_AUTO_RENEW_ENABLED" == "true" ]]; then
+  systemctl is-active --quiet 3xui-cert-renew.timer || die "3xui-cert-renew.timer is not active"
+fi
 container_names="$(docker ps --format '{{.Names}}' || true)"
 grep -Fxq -- "$CONTAINER_NAME" <<< "$container_names" || die "container ${CONTAINER_NAME} is not running"
-[[ -s "${PANEL_DIR}/cert/live/${DOMAIN}/fullchain.pem" ]] || die "fullchain.pem not found"
-[[ -s "${PANEL_DIR}/cert/live/${DOMAIN}/privkey.pem" ]] || die "privkey.pem not found"
+[[ -s "${PANEL_DIR}/cert/live/${CERT_STORAGE_NAME}/fullchain.pem" ]] || die "fullchain.pem not found"
+[[ -s "${PANEL_DIR}/cert/live/${CERT_STORAGE_NAME}/privkey.pem" ]] || die "privkey.pem not found"
 
 PUBLIC_IP="$(curl -4fsS https://api.ipify.org || true)"
-PANEL_PUBLIC_URL="https://${DOMAIN}:${PANEL_PORT}${PANEL_BASE_PATH}"
-SUB_PUBLIC_URL="https://${DOMAIN}:${SUB_PORT}/"
+PANEL_PUBLIC_URL="https://${CLIENT_PUBLIC_ENDPOINT}:${PANEL_PORT}${PANEL_BASE_PATH}"
+SUB_PUBLIC_URL="https://${CLIENT_PUBLIC_ENDPOINT}:${SUB_PORT}/"
 TUNNEL_PANEL_URL="http://127.0.0.1:8080${PANEL_BASE_PATH}"
 LOCAL_PANEL_URL="${PANEL_API_ORIGIN}${PANEL_BASE_PATH}"
 
@@ -2033,12 +2319,67 @@ EOF
   fi
 fi
 
+if [[ "$INSTALL_MODE" == "super-secure" ]]; then
+  SSH_LOGIN_SUMMARY="${NEW_USER}"
+  ROOT_SSH_SUMMARY="yes (PermitRootLogin no)"
+  SSH_SETUP_INSTRUCTIONS="$(cat <<EOF
+  1) Connect with SSH:
+     ssh -p ${SSH_PORT} ${NEW_USER}@${PUBLIC_IP:-<SERVER_IP>}
+  2) If panel is private, create tunnel:
+     ssh -p ${SSH_PORT} -L 8080:127.0.0.1:${PANEL_PORT} ${NEW_USER}@${PUBLIC_IP:-<SERVER_IP>}
+  3) Open the panel:
+     ${TUNNEL_PANEL_URL} (private mode) or ${PANEL_PUBLIC_URL} (public mode)
+  4) Log in to 3x-ui with:
+     username: ${PANEL_ADMIN_USER}
+     password: ${PANEL_ADMIN_PASS}
+  5) If 2FA is enabled, add token ${PANEL_2FA_TOKEN:-N/A} to your authenticator and enter the generated code at login.
+  6) If a new SSH session times out, verify cloud/provider firewall (security group/NAT ACL) allows TCP ${SSH_PORT}.
+EOF
+)"
+  SSH_VERIFY_COMMANDS="$(cat <<EOF
+  sudo /usr/sbin/sshd -t
+  sudo systemctl status ${SSH_ORIGINAL_UNIT} --no-pager
+  sudo systemctl restart ${SSH_ORIGINAL_UNIT}
+  sudo ss -ltnp "( sport = :${SSH_PORT} )"
+  sudo ufw status verbose | grep "${SSH_PORT}/tcp"
+  sudo fail2ban-client status sshd
+EOF
+)"
+else
+  SSH_LOGIN_SUMMARY="unchanged (simple mode)"
+  ROOT_SSH_SUMMARY="not-applied (simple mode)"
+  SSH_SETUP_INSTRUCTIONS="$(cat <<EOF
+  1) Connect with your existing SSH account and SSH port (simple mode does not change SSH hardening).
+  2) If panel is private, create tunnel:
+     ssh -L 8080:127.0.0.1:${PANEL_PORT} <existing-user>@${PUBLIC_IP:-<SERVER_IP>}
+  3) Open the panel:
+     ${TUNNEL_PANEL_URL} (private mode) or ${PANEL_PUBLIC_URL} (public mode)
+  4) Log in to 3x-ui with:
+     username: ${PANEL_ADMIN_USER}
+     password: ${PANEL_ADMIN_PASS}
+EOF
+)"
+  SSH_VERIFY_COMMANDS='  # SSH hardening/fail2ban checks skipped in simple mode'
+fi
+
+if [[ "$CERT_AUTO_RENEW_ENABLED" == "true" ]]; then
+  RENEW_VERIFY_COMMAND='  sudo systemctl status 3xui-cert-renew.timer --no-pager'
+else
+  RENEW_VERIFY_COMMAND='  # Auto-renew disabled for current certificate strategy'
+fi
+
 cat <<EOF
 
 Install finished.
 
 Credentials saved: ${CRED_FILE}
-SSH login: ${NEW_USER}
+Install mode: ${INSTALL_MODE}
+Endpoint mode: ${ENDPOINT_MODE}
+Endpoint value: ${DOMAIN}
+Client endpoint used in URLs: ${CLIENT_PUBLIC_ENDPOINT}
+Certificate strategy: ${CERT_STRATEGY}
+Certificate auto-renew enabled: ${CERT_AUTO_RENEW_ENABLED}
+SSH login: ${SSH_LOGIN_SUMMARY}
 SSH password: ${SSH_PASSWORD_DISPLAY}
 Panel admin username: ${PANEL_ADMIN_USER}
 Panel admin password: ${PANEL_ADMIN_PASS}
@@ -2053,7 +2394,7 @@ Panel 2FA reset by CLI for API access: ${PANEL_2FA_RESET_FOR_API}
 Panel 2FA: ${TWO_FACTOR_SUMMARY}
 Panel 2FA token (save in authenticator): ${PANEL_2FA_TOKEN:-not-enabled}
 Panel exposure: ${EXPOSE_PANEL_PUBLIC}
-Root SSH login disabled: confirmed (PermitRootLogin no)
+Root SSH login disabled: ${ROOT_SSH_SUMMARY}
 SSH external probe: ${SSH_EXTERNAL_PROBE_STATUS}
 
 ${INBOUND_DETAILS}
@@ -2065,32 +2406,17 @@ Links:
   Public subscription URL: ${SUB_PUBLIC_URL}
 
 Setup instructions:
-  1) Connect with SSH:
-     ssh -p ${SSH_PORT} ${NEW_USER}@${PUBLIC_IP:-<SERVER_IP>}
-  2) If panel is private, create tunnel:
-     ssh -p ${SSH_PORT} -L 8080:127.0.0.1:${PANEL_PORT} ${NEW_USER}@${PUBLIC_IP:-<SERVER_IP>}
-  3) Open the panel:
-     ${TUNNEL_PANEL_URL} (private mode) or ${PANEL_PUBLIC_URL} (public mode)
-  4) Log in to 3x-ui with:
-     username: ${PANEL_ADMIN_USER}
-     password: ${PANEL_ADMIN_PASS}
-  5) If 2FA is enabled, add token ${PANEL_2FA_TOKEN:-N/A} to your authenticator and enter the generated code at login.
-  6) If a new SSH session times out, verify cloud/provider firewall (security group/NAT ACL) allows TCP ${SSH_PORT}.
+${SSH_SETUP_INSTRUCTIONS}
 
 Certificate inside container:
-  /root/cert/live/${DOMAIN}/fullchain.pem
-  /root/cert/live/${DOMAIN}/privkey.pem
+  /root/cert/live/${CERT_STORAGE_NAME}/fullchain.pem
+  /root/cert/live/${CERT_STORAGE_NAME}/privkey.pem
 
 Post-install verification commands:
-  sudo /usr/sbin/sshd -t
-  sudo systemctl status ${SSH_ORIGINAL_UNIT} --no-pager
-  sudo systemctl restart ${SSH_ORIGINAL_UNIT}
-  sudo ss -ltnp "( sport = :${SSH_PORT} )"
+${SSH_VERIFY_COMMANDS}
   docker compose -f ${PANEL_DIR}/docker-compose.yml ps
   sudo ufw status numbered
-  sudo ufw status verbose | grep "${SSH_PORT}/tcp"
-  sudo fail2ban-client status sshd
-  sudo systemctl status 3xui-cert-renew.timer --no-pager
-  sudo ls -l ${PANEL_DIR}/cert/live/${DOMAIN}
+${RENEW_VERIFY_COMMAND}
+  sudo ls -l ${PANEL_DIR}/cert/live/${CERT_STORAGE_NAME}
 
 EOF
