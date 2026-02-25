@@ -484,13 +484,16 @@ panel_apply_credentials() {
     return 0
   fi
   rc=$?
-  if (( rc != 2 )); then
-    die "Failed to update panel credentials via API fallback."
+  if (( rc != 1 && rc != 2 )); then
+    die "Panel credentials flow failed unexpectedly (rc=${rc})."
   fi
 
   if ! panel_recover_credentials_once; then
     if [[ "$PANEL_RESET_MODE" == "none" ]]; then
-      die "Failed to apply panel credentials via API. Provide valid current panel credentials (and current 2FA code if enabled)."
+      if (( rc == 1 )); then
+        die "Failed to update panel credentials via API fallback. Set panel recovery mode to 2fa or factory and retry."
+      fi
+      die "Failed to apply panel credentials via API. Provide valid current panel credentials (and current 2FA code if enabled), or set panel recovery mode to 2fa/factory."
     fi
     die "Panel credential recovery failed (mode=${PANEL_RESET_MODE}, action=${PANEL_RESET_ACTION}, result=${PANEL_RESET_RESULT})."
   fi
@@ -529,7 +532,10 @@ panel_apply_credentials_api_first() {
       --data-urlencode "newUsername=${PANEL_ADMIN_USER}" \
       --data-urlencode "newPassword@${new_password_file}" \
       "${PANEL_API_ORIGIN}${PANEL_BASE_PATH}panel/setting/updateUser" || true)"
-    [[ "$response" == *'"success":true'* ]] || return 1
+    if [[ "$response" != *'"success":true'* ]]; then
+      log "Panel updateUser API did not return success. Response: ${response}"
+      return 1
+    fi
     method="api"
   fi
 
