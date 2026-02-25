@@ -11,7 +11,7 @@ STATE_TRACKED_KEYS=(
   DOMAIN EMAIL OPEN_TCP_PORTS OPEN_UDP_PORTS SSH_PORT EXPOSE_PANEL_PUBLIC
   NEW_USER NEW_PASS PANEL_CURRENT_USER PANEL_CURRENT_PASS PANEL_CURRENT_2FA_CODE
   PANEL_ADMIN_USER PANEL_ADMIN_PASS ENABLE_PANEL_2FA AUTO_CREATE_INBOUND
-  INBOUND_PORT INBOUND_REMARK INBOUND_CLIENT_EMAIL INBOUND_SNI PANEL_2FA_TOKEN
+  INBOUND_MODE INBOUND_PORT INBOUND_REMARK INBOUND_CLIENT_EMAIL INBOUND_DEST INBOUND_SNI PANEL_2FA_TOKEN
   PANEL_RESET_MODE PANEL_RESET_ACTION PANEL_RESET_RESULT PANEL_FACTORY_BACKUP_PATH
 )
 STATE_SECRET_KEYS=(
@@ -870,7 +870,9 @@ panel_ensure_vless_inbound() {
   local list_response=""
   local add_response=""
   local parse_result=""
+  local parse_status=""
   local existing_id=""
+  local existing_security=""
   local existing_client_id=""
   local existing_client_email=""
   local -a parsed_lines=()
@@ -879,6 +881,23 @@ panel_ensure_vless_inbound() {
   local sniffing_json='{"enabled":true,"destOverride":["http","tls","quic"]}'
   local cert_file="/root/cert/live/${DOMAIN}/fullchain.pem"
   local key_file="/root/cert/live/${DOMAIN}/privkey.pem"
+  local expected_security=""
+  local inbound_flow=""
+
+  case "$INBOUND_MODE" in
+    reality)
+      expected_security="reality"
+      inbound_flow="xtls-rprx-vision"
+      sniffing_json='{"enabled":true,"destOverride":["http","tls"]}'
+      ;;
+    tls)
+      expected_security="tls"
+      inbound_flow=""
+      ;;
+    *)
+      die "Unsupported INBOUND_MODE '${INBOUND_MODE}' for auto inbound."
+      ;;
+  esac
 
   list_response="$(curl -ksS --max-time 10 \
     -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" \
@@ -889,6 +908,9 @@ panel_ensure_vless_inbound() {
 payload=json.load(sys.stdin)
 items=payload.get("obj")
 target_port=int(sys.argv[1])
+target_security=str(sys.argv[2]).lower()
+target_dest=str(sys.argv[3])
+target_sni=str(sys.argv[4]).lower()
 if not isinstance(items,list):
     raise SystemExit(0)
 for item in items:
@@ -899,6 +921,13 @@ for item in items:
     protocol=str(item.get("protocol","")).lower()
     if port != target_port or protocol != "vless":
         continue
+    stream=item.get("streamSettings")
+    if isinstance(stream,str):
+        try:
+            stream=json.loads(stream)
+        except Exception:
+            stream={}
+    security=str(stream.get("security","")).lower() if isinstance(stream,dict) else ""
     settings=item.get("settings")
     if isinstance(settings,str):
         try:
@@ -907,21 +936,56 @@ for item in items:
             settings={}
     clients=settings.get("clients") if isinstance(settings,dict) else []
     first=clients[0] if clients else {}
+    if security == target_security and security == "reality":
+        reality=stream.get("realitySettings") if isinstance(stream,dict) else {}
+        dest=str(reality.get("dest","")) if isinstance(reality,dict) else ""
+        names=reality.get("serverNames") if isinstance(reality,dict) else []
+        if not isinstance(names,list):
+            names=[]
+        names=[str(x).lower() for x in names]
+        if dest != target_dest or target_sni not in names:
+            print("CONFLICT")
+            print(str(item.get("id","")))
+            print(str(first.get("id","")))
+            print(str(first.get("email","")))
+            print(security)
+            raise SystemExit(0)
+    if security == target_security:
+        print("EXISTING")
+        print(str(item.get("id","")))
+        print(str(first.get("id","")))
+        print(str(first.get("email","")))
+        print(security)
+        raise SystemExit(0)
+    print("CONFLICT")
     print(str(item.get("id","")))
     print(str(first.get("id","")))
     print(str(first.get("email","")))
-    raise SystemExit(0)' "$INBOUND_PORT" <<< "$list_response")"
+    print(security if security else "none")
+    raise SystemExit(0)' "$INBOUND_PORT" "$expected_security" "$INBOUND_DEST" "$INBOUND_SNI" <<< "$list_response")"
 
   if [[ -n "$parse_result" ]]; then
     mapfile -t parsed_lines <<< "$parse_result"
-    existing_id="${parsed_lines[0]:-}"
-    existing_client_id="${parsed_lines[1]:-}"
-    existing_client_email="${parsed_lines[2]:-}"
-    INBOUND_STATUS="existing"
-    INBOUND_ID="$existing_id"
-    [[ -n "$existing_client_id" ]] && INBOUND_CLIENT_ID="$existing_client_id"
-    [[ -n "$existing_client_email" ]] && INBOUND_CLIENT_EMAIL="$existing_client_email"
-    return 0
+    parse_status="${parsed_lines[0]:-}"
+    existing_id="${parsed_lines[1]:-}"
+    existing_client_id="${parsed_lines[2]:-}"
+    existing_client_email="${parsed_lines[3]:-}"
+    existing_security="${parsed_lines[4]:-unknown}"
+    case "$parse_status" in
+      EXISTING)
+        INBOUND_STATUS="existing"
+        INBOUND_ID="$existing_id"
+        [[ -n "$existing_client_id" ]] && INBOUND_CLIENT_ID="$existing_client_id"
+        [[ -n "$existing_client_email" ]] && INBOUND_CLIENT_EMAIL="$existing_client_email"
+        return 0
+        ;;
+      CONFLICT)
+        die "Inbound conflict on port ${INBOUND_PORT}: existing VLESS inbound id=${existing_id:-unknown} is incompatible with requested INBOUND_MODE=${INBOUND_MODE} (existing security='${existing_security}', expected='${expected_security}'; for reality, dest/SNI must also match). Remove/update the existing inbound or choose another INBOUND_PORT."
+        ;;
+      *)
+        die "Failed to parse existing inbound state for port ${INBOUND_PORT}."
+        ;;
+    esac
   fi
 
   [[ -n "$INBOUND_CLIENT_ID" ]] || INBOUND_CLIENT_ID="$(generate_uuid)"
@@ -929,12 +993,18 @@ for item in items:
   [[ -n "$INBOUND_CLIENT_SUBID" && ${#INBOUND_CLIENT_SUBID} -eq 16 ]] || die "INBOUND_CLIENT_SUBID must be exactly 16 characters."
 
   settings_json="$(python3 -c 'import json,sys
-payload={"clients":[{"id":sys.argv[1],"flow":"","email":sys.argv[2],"limitIp":0,"totalGB":0,"expiryTime":0,"enable":True,"tgId":"","subId":sys.argv[3],"comment":"","reset":0}],"decryption":"none"}
-print(json.dumps(payload,separators=(",",":")))' "$INBOUND_CLIENT_ID" "$INBOUND_CLIENT_EMAIL" "$INBOUND_CLIENT_SUBID")"
+payload={"clients":[{"id":sys.argv[1],"flow":sys.argv[4],"email":sys.argv[2],"limitIp":0,"totalGB":0,"expiryTime":0,"enable":True,"tgId":"","subId":sys.argv[3],"comment":"","reset":0}],"decryption":"none"}
+print(json.dumps(payload,separators=(",",":")))' "$INBOUND_CLIENT_ID" "$INBOUND_CLIENT_EMAIL" "$INBOUND_CLIENT_SUBID" "$inbound_flow")"
 
-  stream_json="$(python3 -c 'import json,sys
+  if [[ "$INBOUND_MODE" == "tls" ]]; then
+    stream_json="$(python3 -c 'import json,sys
 payload={"network":"tcp","security":"tls","tcpSettings":{"acceptProxyProtocol":False,"header":{"type":"none"}},"tlsSettings":{"serverName":sys.argv[1],"certificates":[{"certificateFile":sys.argv[2],"keyFile":sys.argv[3]}],"alpn":["http/1.1"]}}
 print(json.dumps(payload,separators=(",",":")))' "$INBOUND_SNI" "$cert_file" "$key_file")"
+  else
+    stream_json="$(python3 -c 'import json,sys
+payload={"network":"tcp","security":"reality","tcpSettings":{"acceptProxyProtocol":False,"header":{"type":"none"}},"realitySettings":{"show":False,"dest":sys.argv[1],"serverNames":[sys.argv[2]],"privateKey":"","shortIds":[""]}}
+print(json.dumps(payload,separators=(",",":")))' "$INBOUND_DEST" "$INBOUND_SNI")"
+  fi
 
   add_response="$(curl -ksS --max-time 12 \
     -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" \
@@ -953,7 +1023,7 @@ print(json.dumps(payload,separators=(",",":")))' "$INBOUND_SNI" "$cert_file" "$k
     --data-urlencode "sniffing=${sniffing_json}" \
     -X POST \
     "${PANEL_API_ORIGIN}${PANEL_BASE_PATH}panel/api/inbounds/add" || true)"
-  [[ "$add_response" == *'"success":true'* ]] || die "Failed to auto-create VLESS+TLS inbound."
+  [[ "$add_response" == *'"success":true'* ]] || die "Failed to auto-create VLESS inbound (mode=${INBOUND_MODE})."
 
   INBOUND_ID="$(python3 -c 'import json,sys
 payload=json.load(sys.stdin)
@@ -1029,11 +1099,13 @@ resolve_var_from_env_state_default PANEL_FACTORY_BACKUP_PATH ""
 resolve_var_from_env_state_default ENABLE_PANEL_2FA "false"
 resolve_var_from_env_state_default AUTO_CREATE_INBOUND "false"
 resolve_var_from_env_state_default STRICT_SSH_EXTERNAL_CHECK "true"
+resolve_var_from_env_state_default INBOUND_MODE "reality"
 # Default inbound port is 443 unless INBOUND_PORT is explicitly provided.
 resolve_var_from_env_state_default INBOUND_PORT "443"
 resolve_var_from_env_state_default INBOUND_REMARK ""
 resolve_var_from_env_state_default INBOUND_CLIENT_EMAIL ""
-resolve_var_from_env_state_default INBOUND_SNI ""
+resolve_var_from_env_state_default INBOUND_DEST "cloudflare.com:443"
+resolve_var_from_env_state_default INBOUND_SNI "cloudflare.com"
 INBOUND_CLIENT_ID="${INBOUND_CLIENT_ID:-}"
 INBOUND_CLIENT_SUBID="${INBOUND_CLIENT_SUBID:-}"
 resolve_var_from_env_state_default SSH_PORT "22"
@@ -1307,7 +1379,7 @@ if [[ -t 0 ]]; then
   while :; do
     bool_hint="[y/N]"
     [[ "$AUTO_CREATE_INBOUND" == "true" ]] && bool_hint="[Y/n]"
-    read -r -p "Auto-create VLESS+TLS TCP inbound now? ${bool_hint}: " input
+    read -r -p "Auto-create VLESS TCP inbound now? ${bool_hint}: " input
     [[ -n "$input" ]] || input="$AUTO_CREATE_INBOUND"
     AUTO_CREATE_INBOUND="$(normalize_bool_choice "$input")" || {
       printf "Enter yes/y or no/n.\n" >&2
@@ -1318,6 +1390,16 @@ if [[ -t 0 ]]; then
   save_state_checkpoint
 
   if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
+    while :; do
+      read -r -p "Auto inbound mode [${INBOUND_MODE}] (reality/tls): " input
+      INBOUND_MODE="$(printf '%s' "${input:-$INBOUND_MODE}" | tr '[:upper:]' '[:lower:]')"
+      case "$INBOUND_MODE" in
+        reality|tls) break ;;
+        *) printf "Enter one of: reality, tls.\n" >&2 ;;
+      esac
+    done
+    save_state_checkpoint
+
     while :; do
       read -r -p "Auto inbound port [${INBOUND_PORT}] (default 443): " input
       INBOUND_PORT="${input:-$INBOUND_PORT}"
@@ -1330,8 +1412,13 @@ if [[ -t 0 ]]; then
       read -r -p "Inbound remark [${INBOUND_REMARK}]: " input
       INBOUND_REMARK="${input:-$INBOUND_REMARK}"
     else
-      read -r -p "Inbound remark [vless-tls-${DOMAIN}]: " input
-      INBOUND_REMARK="${input:-vless-tls-${DOMAIN}}"
+      if [[ "$INBOUND_MODE" == "reality" ]]; then
+        read -r -p "Inbound remark [vless-reality-${DOMAIN}]: " input
+        INBOUND_REMARK="${input:-vless-reality-${DOMAIN}}"
+      else
+        read -r -p "Inbound remark [vless-tls-${DOMAIN}]: " input
+        INBOUND_REMARK="${input:-vless-tls-${DOMAIN}}"
+      fi
     fi
     save_state_checkpoint
 
@@ -1344,12 +1431,31 @@ if [[ -t 0 ]]; then
     fi
     save_state_checkpoint
 
-    if [[ -n "$INBOUND_SNI" ]]; then
-      read -r -p "Inbound TLS SNI/serverName [${INBOUND_SNI}]: " input
-      INBOUND_SNI="${input:-$INBOUND_SNI}"
+    if [[ "$INBOUND_MODE" == "reality" ]]; then
+      if [[ -n "$INBOUND_DEST" ]]; then
+        read -r -p "Inbound Reality dest [${INBOUND_DEST}] (host:port): " input
+        INBOUND_DEST="${input:-$INBOUND_DEST}"
+      else
+        read -r -p "Inbound Reality dest [cloudflare.com:443] (host:port): " input
+        INBOUND_DEST="${input:-cloudflare.com:443}"
+      fi
+      save_state_checkpoint
+
+      if [[ -n "$INBOUND_SNI" ]]; then
+        read -r -p "Inbound Reality serverName/SNI [${INBOUND_SNI}]: " input
+        INBOUND_SNI="${input:-$INBOUND_SNI}"
+      else
+        read -r -p "Inbound Reality serverName/SNI [cloudflare.com]: " input
+        INBOUND_SNI="${input:-cloudflare.com}"
+      fi
     else
-      read -r -p "Inbound TLS SNI/serverName [${DOMAIN}]: " input
-      INBOUND_SNI="${input:-${DOMAIN}}"
+      if [[ -n "$INBOUND_SNI" ]]; then
+        read -r -p "Inbound TLS SNI/serverName [${INBOUND_SNI}]: " input
+        INBOUND_SNI="${input:-$INBOUND_SNI}"
+      else
+        read -r -p "Inbound TLS SNI/serverName [${DOMAIN}]: " input
+        INBOUND_SNI="${input:-${DOMAIN}}"
+      fi
     fi
     save_state_checkpoint
   fi
@@ -1362,6 +1468,7 @@ ENABLE_PANEL_2FA="$(normalize_bool_choice "$ENABLE_PANEL_2FA" || true)"
 AUTO_CREATE_INBOUND="$(normalize_bool_choice "$AUTO_CREATE_INBOUND" || true)"
 STRICT_SSH_EXTERNAL_CHECK="$(normalize_bool_choice "$STRICT_SSH_EXTERNAL_CHECK" || true)"
 PANEL_RESET_MODE="$(printf '%s' "$PANEL_RESET_MODE" | tr '[:upper:]' '[:lower:]')"
+INBOUND_MODE="$(printf '%s' "$INBOUND_MODE" | tr '[:upper:]' '[:lower:]')"
 
 missing=()
 for v in DOMAIN EMAIL OPEN_TCP_PORTS; do
@@ -1381,9 +1488,21 @@ is_valid_port "$SUB_PORT" || die "SUB_PORT must be 1..65535."
 [[ "$PANEL_ADMIN_USER" =~ ^[A-Za-z0-9_.@-]{3,64}$ ]] || die "PANEL_ADMIN_USER must match ^[A-Za-z0-9_.@-]{3,64}$."
 [[ "$PANEL_ADMIN_PASS" != *$'\n'* ]] || die "PANEL_ADMIN_PASS must not contain newline characters."
 [[ "$PANEL_CURRENT_PASS" != *$'\n'* ]] || die "PANEL_CURRENT_PASS must not contain newline characters."
-[[ -n "$INBOUND_REMARK" ]] || INBOUND_REMARK="vless-tls-${DOMAIN}"
 [[ -n "$INBOUND_CLIENT_EMAIL" ]] || INBOUND_CLIENT_EMAIL="client@${DOMAIN}"
-[[ -n "$INBOUND_SNI" ]] || INBOUND_SNI="$DOMAIN"
+case "$INBOUND_MODE" in
+  reality)
+    [[ -n "$INBOUND_REMARK" ]] || INBOUND_REMARK="vless-reality-${DOMAIN}"
+    [[ -n "$INBOUND_DEST" ]] || INBOUND_DEST="cloudflare.com:443"
+    [[ -n "$INBOUND_SNI" ]] || INBOUND_SNI="cloudflare.com"
+    ;;
+  tls)
+    [[ -n "$INBOUND_REMARK" ]] || INBOUND_REMARK="vless-tls-${DOMAIN}"
+    [[ -n "$INBOUND_SNI" ]] || INBOUND_SNI="$DOMAIN"
+    ;;
+  *)
+    die "INBOUND_MODE must be one of: reality, tls."
+    ;;
+esac
 case "$EXPOSE_PANEL_PUBLIC" in
   true|false) ;;
   *) die "EXPOSE_PANEL_PUBLIC must be true or false." ;;
@@ -1410,9 +1529,17 @@ fi
 save_state_checkpoint
 
 if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
+  case "$INBOUND_MODE" in
+    reality|tls) ;;
+    *) die "INBOUND_MODE must be one of: reality, tls." ;;
+  esac
   is_valid_port "$INBOUND_PORT" || die "INBOUND_PORT must be 1..65535."
   [[ "$INBOUND_CLIENT_EMAIL" == *"@"* ]] || die "INBOUND_CLIENT_EMAIL must be a valid email address."
   [[ -n "$INBOUND_SNI" ]] || die "INBOUND_SNI must not be empty."
+  if [[ "$INBOUND_MODE" == "reality" ]]; then
+    [[ -n "$INBOUND_DEST" ]] || die "INBOUND_DEST must not be empty when INBOUND_MODE=reality."
+    [[ "$INBOUND_DEST" == *:* ]] || die "INBOUND_DEST must be in host:port format when INBOUND_MODE=reality."
+  fi
   [[ "$INBOUND_PORT" != "$PANEL_PORT" ]] || die "INBOUND_PORT must not be the same as PANEL_PORT."
   [[ "$INBOUND_PORT" != "$SUB_PORT" ]] || die "INBOUND_PORT must not be the same as SUB_PORT."
 fi
@@ -1673,7 +1800,7 @@ if [[ "$AUTO_CREATE_INBOUND" == "true" || "$ENABLE_PANEL_2FA" == "true" ]]; then
   panel_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$PANEL_CURRENT_2FA_CODE" || die "Panel login failed before API finalization."
 
   if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
-    log "Ensuring requested VLESS+TLS inbound exists"
+    log "Ensuring requested VLESS inbound exists (mode=${INBOUND_MODE})"
     panel_ensure_vless_inbound
   fi
 
@@ -1778,10 +1905,13 @@ PANEL_2FA_RESET_FOR_API=${PANEL_2FA_RESET_FOR_API}
 PANEL_2FA_ENABLED=${PANEL_2FA_EFFECTIVE}
 PANEL_2FA_TOKEN=${PANEL_2FA_TOKEN}
 AUTO_INBOUND_STATUS=${INBOUND_STATUS}
+AUTO_INBOUND_MODE=${INBOUND_MODE}
 AUTO_INBOUND_PORT=${INBOUND_PORT}
 AUTO_INBOUND_ID=${INBOUND_ID}
 AUTO_INBOUND_CLIENT_ID=${INBOUND_CLIENT_ID}
 AUTO_INBOUND_CLIENT_EMAIL=${INBOUND_CLIENT_EMAIL}
+AUTO_INBOUND_SNI=${INBOUND_SNI}
+AUTO_INBOUND_DEST=${INBOUND_DEST}
 DOMAIN=${DOMAIN}
 PANEL_DIR=${PANEL_DIR}
 ROOT_SSH_DISABLED_CONFIRMED=${ROOT_SSH_DISABLED_CONFIRMED}
@@ -1812,16 +1942,35 @@ fi
 if [[ "$INBOUND_STATUS" == "not-requested" ]]; then
   INBOUND_DETAILS="Inbound auto-creation: not requested"
 else
-  INBOUND_DETAILS="$(cat <<EOF
+  if [[ "$INBOUND_MODE" == "reality" ]]; then
+    INBOUND_DETAILS="$(cat <<EOF
 Inbound auto-creation: ${INBOUND_STATUS}
-Inbound protocol: VLESS TCP TLS
+Inbound mode: ${INBOUND_MODE}
+Inbound protocol: VLESS TCP REALITY
+Inbound security: reality
 Inbound port: ${INBOUND_PORT}
-Inbound SNI: ${INBOUND_SNI}
+Inbound Reality dest: ${INBOUND_DEST}
+Inbound Reality serverName/SNI: ${INBOUND_SNI}
+Inbound flow: xtls-rprx-vision
+Inbound sniffing: http,tls (quic disabled)
 Inbound id: ${INBOUND_ID:-n/a}
 Inbound client email: ${INBOUND_CLIENT_EMAIL}
 Inbound client UUID: ${INBOUND_CLIENT_ID:-n/a}
 EOF
 )"
+  else
+    INBOUND_DETAILS="$(cat <<EOF
+Inbound auto-creation: ${INBOUND_STATUS}
+Inbound mode: ${INBOUND_MODE}
+Inbound protocol: VLESS TCP TLS
+Inbound port: ${INBOUND_PORT}
+Inbound TLS SNI: ${INBOUND_SNI}
+Inbound id: ${INBOUND_ID:-n/a}
+Inbound client email: ${INBOUND_CLIENT_EMAIL}
+Inbound client UUID: ${INBOUND_CLIENT_ID:-n/a}
+EOF
+)"
+  fi
 fi
 
 cat <<EOF
@@ -1866,14 +2015,20 @@ Setup instructions:
      username: ${PANEL_ADMIN_USER}
      password: ${PANEL_ADMIN_PASS}
   5) If 2FA is enabled, add token ${PANEL_2FA_TOKEN:-N/A} to your authenticator and enter the generated code at login.
+  6) If a new SSH session times out, verify cloud/provider firewall (security group/NAT ACL) allows TCP ${SSH_PORT}.
 
 Certificate inside container:
   /root/cert/live/${DOMAIN}/fullchain.pem
   /root/cert/live/${DOMAIN}/privkey.pem
 
 Post-install verification commands:
+  sudo /usr/sbin/sshd -t
+  sudo systemctl status ${SSH_ORIGINAL_UNIT} --no-pager
+  sudo systemctl restart ${SSH_ORIGINAL_UNIT}
+  sudo ss -ltnp "( sport = :${SSH_PORT} )"
   docker compose -f ${PANEL_DIR}/docker-compose.yml ps
   sudo ufw status numbered
+  sudo ufw status verbose | grep "${SSH_PORT}/tcp"
   sudo fail2ban-client status sshd
   sudo systemctl status 3xui-cert-renew.timer --no-pager
   sudo ls -l ${PANEL_DIR}/cert/live/${DOMAIN}
