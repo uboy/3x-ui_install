@@ -656,6 +656,12 @@ panel_apply_credentials() {
   PANEL_RESET_RESULT="not-attempted"
   PANEL_FACTORY_BACKUP_PATH=""
 
+  if [[ "$PANEL_RESET_MODE" == "factory" ]]; then
+    if ! panel_recover_credentials_once; then
+      die "Panel credential recovery failed (mode=${PANEL_RESET_MODE}, action=${PANEL_RESET_ACTION}, result=${PANEL_RESET_RESULT})."
+    fi
+  fi
+
   if panel_apply_credentials_api_first; then
     return 0
   else
@@ -799,10 +805,21 @@ panel_recover_credentials_once() {
       ;;
     factory)
       PANEL_RESET_ACTION="factory-reset"
+      if [[ "$PANEL_FACTORY_RESET_EXECUTED" == "true" ]]; then
+        if [[ "$PANEL_FACTORY_RESET_SUCCESS" == "true" ]]; then
+          PANEL_RESET_RESULT="success"
+          return 0
+        fi
+        PANEL_RESET_RESULT="failed"
+        return 1
+      fi
+      PANEL_FACTORY_RESET_EXECUTED="true"
       if panel_factory_reset_with_backup; then
+        PANEL_FACTORY_RESET_SUCCESS="true"
         PANEL_RESET_RESULT="success"
         return 0
       fi
+      PANEL_FACTORY_RESET_SUCCESS="false"
       PANEL_RESET_RESULT="failed"
       return 1
       ;;
@@ -1125,6 +1142,8 @@ PANEL_API_LOGIN_AVAILABLE="false"
 PANEL_2FA_TOKEN=""
 PANEL_2FA_EFFECTIVE="false"
 PANEL_2FA_RESET_FOR_API="false"
+PANEL_FACTORY_RESET_EXECUTED="false"
+PANEL_FACTORY_RESET_SUCCESS="false"
 PANEL_RESET_ACTION="none"
 PANEL_RESET_RESULT="not-attempted"
 PANEL_FACTORY_BACKUP_PATH=""
@@ -1398,6 +1417,11 @@ if [[ -t 0 ]]; then
         *) printf "Enter one of: reality, tls.\n" >&2 ;;
       esac
     done
+    if [[ "$INBOUND_MODE" == "reality" ]]; then
+      # Migrate legacy TLS-like defaults from previous state to HostVDS Reality defaults.
+      [[ -n "$INBOUND_DEST" && "$INBOUND_DEST" != "${DOMAIN}:443" ]] || INBOUND_DEST="cloudflare.com:443"
+      [[ -n "$INBOUND_SNI" && "$INBOUND_SNI" != "$DOMAIN" ]] || INBOUND_SNI="cloudflare.com"
+    fi
     save_state_checkpoint
 
     while :; do
@@ -1492,8 +1516,8 @@ is_valid_port "$SUB_PORT" || die "SUB_PORT must be 1..65535."
 case "$INBOUND_MODE" in
   reality)
     [[ -n "$INBOUND_REMARK" ]] || INBOUND_REMARK="vless-reality-${DOMAIN}"
-    [[ -n "$INBOUND_DEST" ]] || INBOUND_DEST="cloudflare.com:443"
-    [[ -n "$INBOUND_SNI" ]] || INBOUND_SNI="cloudflare.com"
+    [[ -n "$INBOUND_DEST" && "$INBOUND_DEST" != "${DOMAIN}:443" ]] || INBOUND_DEST="cloudflare.com:443"
+    [[ -n "$INBOUND_SNI" && "$INBOUND_SNI" != "$DOMAIN" ]] || INBOUND_SNI="cloudflare.com"
     ;;
   tls)
     [[ -n "$INBOUND_REMARK" ]] || INBOUND_REMARK="vless-tls-${DOMAIN}"
@@ -1798,6 +1822,9 @@ if [[ "$AUTO_CREATE_INBOUND" == "true" || "$ENABLE_PANEL_2FA" == "true" ]]; then
   log "Finalizing panel API configuration"
   panel_wait_ready || die "3x-ui panel did not recover after certificate deployment."
   panel_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$PANEL_CURRENT_2FA_CODE" || die "Panel login failed before API finalization."
+  if [[ "$PANEL_RESET_MODE" == "factory" && "$PANEL_RESET_RESULT" != "success" ]]; then
+    die "PANEL_RESET_MODE=factory requires PANEL_RESET_RESULT=success before final API inbound stage."
+  fi
 
   if [[ "$AUTO_CREATE_INBOUND" == "true" ]]; then
     log "Ensuring requested VLESS inbound exists (mode=${INBOUND_MODE})"
