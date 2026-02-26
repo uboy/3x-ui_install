@@ -66,6 +66,22 @@ main() {
   log "Шаг 3: Подтверждение и начало установки..."
   ui_confirm_install
   
+  # Проверка конфликтов портов
+  declare -A USED_PORTS
+  USED_PORTS[443]="3x-ui Reality"
+  USED_PORTS[1194]="OpenVPN"
+  USED_PORTS[4443]="OpenConnect"
+  USED_PORTS[51820]="AmneziaWG"
+  USED_PORTS[2053]="3x-ui Panel"
+  
+  # Если SSH_PORT изменен
+  if [[ "${SSH_PORT:-22}" != "22" ]]; then
+      if [[ -n "${USED_PORTS[$SSH_PORT]:-}" ]]; then
+          error "КОНФЛИКТ ПОРТОВ: Порт $SSH_PORT занят сервисом ${USED_PORTS[$SSH_PORT]}. Смените порт SSH!"
+          exit 1
+      fi
+  fi
+  
   module_base_install
   firewall_init
   

@@ -22,9 +22,12 @@ module_amnezia_install() {
     
     local image="amneziavpn/amnezia-wg"
     
-    log "Генерация ключей..."
-    local private_key=$(docker run --rm $image awg genkey)
-    local public_key=$(echo "$private_key" | docker run --rm -i $image awg pubkey)
+    log "Генерация ключей (OpenSSL)..."
+    # WireGuard ключи - это просто 32 байта в base64
+    local private_key=$(openssl rand -base64 32)
+    # Для публичного ключа все же нужен контейнер или утилита, 
+    # но мы можем запустить сам образ для этого
+    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "" $image sh -c "awg pubkey 2>/dev/null || wg pubkey")
     
     log "Настройка параметров обфускации..."
     cat > "${AMN_DIR}/amneziawg.conf" <<EOF
@@ -33,7 +36,6 @@ PrivateKey = $private_key
 Address = 10.8.0.1/24
 ListenPort = 51820
 
-# AmneziaWG Junk Settings
 J1 = $(shuf -i 10-100 -n 1)
 J2 = $(shuf -i 10-100 -n 1)
 S1 = $(shuf -i 10-100 -n 1)
@@ -62,24 +64,23 @@ EOF
     cd "$AMN_DIR"
     docker compose up -d
     
-    # Ждем подольше и проверяем статус
     log "Ожидание инициализации (10 сек)..."
     sleep 10
 
     if ! docker ps --format '{{.Names}} {{.Status}}' | grep "amneziawg" | grep -q "Up"; then
-        error "Контейнер amneziawg не запустился (Restart loop). Логи контейнера:"
+        error "Контейнер amneziawg не запустился. Последние логи:"
         docker logs amneziawg | tail -n 20
         return 1
     fi
 
     log "Создание клиентского профиля..."
-    local client_private_key=$(docker run --rm $image awg genkey)
-    local client_public_key=$(echo "$client_private_key" | docker run --rm -i $image awg pubkey)
+    local client_private_key=$(openssl rand -base64 32)
+    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "" $image sh -c "awg pubkey 2>/dev/null || wg pubkey")
     
-    # Используем awg вместо wg внутри контейнера
-    docker exec amneziawg awg set awg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
+    # Регистрация пира
+    docker exec amneziawg sh -c "awg set awg0 peer $client_public_key allowed-ips 10.8.0.2/32 2>/dev/null || wg set awg0 peer $client_public_key allowed-ips 10.8.0.2/32"
     
-    log "Генерация файла конфигурации для клиента (amnezia_client.conf)..."
+    log "Генерация файла конфигурации для клиента..."
     cat > "${AMN_DIR}/amnezia_client.conf" <<EOF
 [Interface]
 PrivateKey = $client_private_key
