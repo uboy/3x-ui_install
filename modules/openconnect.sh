@@ -10,6 +10,9 @@ module_openconnect_install() {
             INSTALL_OPENCONNECT="skipped"
             return 0
         fi
+        log "Полное удаление старой установки ocserv..."
+        apt-get purge -y ocserv || true
+        rm -rf /etc/ocserv
     fi
 
     log "Установка OpenConnect (ocserv) нативно..."

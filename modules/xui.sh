@@ -6,6 +6,8 @@ source "${SCRIPT_DIR}/lib/xui_api.sh"
 module_xui_install() {
     [[ "$INSTALL_XUI" == "true" ]] || return 0
     
+    PANEL_DIR="${PANEL_DIR:-/opt/3x-ui}"
+
     # Детекция существующей установки
     if docker ps -a --format '{{.Names}}' | grep -q "^3x-ui$"; then
         if ! ui_ask_reinstall "3x-ui Panel"; then
@@ -13,12 +15,12 @@ module_xui_install() {
             INSTALL_XUI="skipped"
             return 0
         fi
+        log "Очистка старой установки 3x-ui..."
+        cd "$PANEL_DIR" && docker compose down -v 2>/dev/null || true
+        rm -rf "$PANEL_DIR"
     fi
 
     log "Установка 3x-ui (через Docker)..."
-    
-    # Подготовка директорий
-    PANEL_DIR="${PANEL_DIR:-/opt/3x-ui}"
     mkdir -p "$PANEL_DIR/db" "$PANEL_DIR/cert"
     
     # Генерация конфига Docker Compose

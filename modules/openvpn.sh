@@ -3,6 +3,8 @@
 module_openvpn_install() {
     [[ "$INSTALL_OPENVPN" == "true" ]] || return 0
     
+    OVPN_DIR="/opt/openvpn"
+
     # Детекция существующей установки
     if docker ps -a --format '{{.Names}}' | grep -q "^openvpn$"; then
         if ! ui_ask_reinstall "OpenVPN"; then
@@ -10,11 +12,12 @@ module_openvpn_install() {
             INSTALL_OPENVPN="skipped"
             return 0
         fi
+        log "Очистка старой установки OpenVPN..."
+        cd "$OVPN_DIR" && docker compose down -v 2>/dev/null || true
+        rm -rf "$OVPN_DIR"
     fi
 
     log "Установка OpenVPN (Docker)..."
-    
-    OVPN_DIR="/opt/openvpn"
     mkdir -p "$OVPN_DIR"
     
     # 1. Инициализация конфигурации если её нет

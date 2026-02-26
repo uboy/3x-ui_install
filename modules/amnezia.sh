@@ -3,6 +3,8 @@
 module_amnezia_install() {
     [[ "$INSTALL_AMNEZIA" == "true" ]] || return 0
     
+    AMN_DIR="/opt/amnezia"
+
     # Детекция существующей установки
     if docker ps -a --format '{{.Names}}' | grep -q "^amneziawg$"; then
         if ! ui_ask_reinstall "AmneziaWG"; then
@@ -10,11 +12,12 @@ module_amnezia_install() {
             INSTALL_AMNEZIA="skipped"
             return 0
         fi
+        log "Очистка старой установки AmneziaWG..."
+        cd "$AMN_DIR" && docker compose down -v 2>/dev/null || true
+        rm -rf "$AMN_DIR"
     fi
 
     log "Установка AmneziaWG (Docker)..."
-    
-    AMN_DIR="/opt/amnezia"
     mkdir -p "$AMN_DIR"
     
     # Используем официальный публичный образ с Docker Hub
