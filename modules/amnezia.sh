@@ -22,17 +22,21 @@ module_amnezia_install() {
     
     local image="amneziavpn/amnezia-wg"
     
-    log "Генерация ключей..."
-    local private_key=$(openssl rand -base64 32)
-    # Прямая попытка получить публичный ключ
-    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "/usr/bin/awg" $image pubkey 2>/dev/null || echo "$private_key" | docker run --rm -i --entrypoint "/usr/bin/wg" $image pubkey)
+    log "Поиск бинарных файлов в образе..."
+    local awg_bin=$(docker run --rm $image sh -c "which awg || which amnezia-wg || find / -name awg -type f 2>/dev/null | head -n 1")
+    local awg_quick=$(docker run --rm $image sh -c "which awg-quick || which amnezia-wg-quick || find / -name awg-quick -type f 2>/dev/null | head -n 1")
     
-    if [[ -z "$public_key" ]]; then
-        error "Не удалось сгенерировать ключи. Образ $image не отвечает."
+    if [[ -z "$awg_bin" ]]; then
+        error "Инструменты AmneziaWG не найдены в образе $image."
         return 1
     fi
+    log "Используем: bin=$awg_bin, quick=$awg_quick"
 
-    log "Создание конфигурации..."
+    log "Генерация ключей..."
+    local private_key=$(openssl rand -base64 32)
+    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "" $image sh -c "$awg_bin pubkey")
+    
+    log "Создание конфигурации сервера..."
     cat > "${AMN_DIR}/amneziawg.conf" <<EOF
 [Interface]
 PrivateKey = $private_key
@@ -47,22 +51,28 @@ H2 = $(shuf -i 10000000-99999999 -n 1)
 H3 = $(shuf -i 10000000-99999999 -n 1)
 H4 = $(shuf -i 10000000-99999999 -n 1)
 EOF
+    chmod 600 "${AMN_DIR}/amneziawg.conf"
 
-    # Создаем Docker Compose
-    # Мы используем команду, которая сначала подменяет wg на awg, а потом запускает стандартный wg-quick
+    # Docker Compose
     cat > "${AMN_DIR}/docker-compose.yml" <<EOF
 services:
   amneziawg:
     image: $image
     container_name: amneziawg
     privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
     volumes:
       - ./amneziawg.conf:/etc/wireguard/wg0.conf
+    # Скрипт запуска: 
+    # 1. Подменяет стандартный wg на найденный awg
+    # 2. Пытается запустить интерфейс
+    # 3. Если упало - выводит ошибку и завершает контейнер (чтобы мы это увидели)
     entrypoint: >
       /bin/sh -c "
-      [ -f /usr/bin/awg ] && ln -sf /usr/bin/awg /usr/bin/wg;
-      [ -f /usr/bin/awg-quick ] && ln -sf /usr/bin/awg-quick /usr/bin/wg-quick;
-      wg-quick up wg0;
+      ln -sf $awg_bin /usr/bin/wg;
+      $awg_quick up wg0 || exit 1;
       tail -f /dev/null
       "
     ports:
@@ -74,21 +84,28 @@ EOF
     cd "$AMN_DIR"
     docker compose up -d
     
-    log "Ожидание (15 сек)..."
+    log "Ожидание инициализации (15 сек)..."
     sleep 15
 
     if ! docker ps --format '{{.Names}} {{.Status}}' | grep "amneziawg" | grep -q "Up"; then
-        error "Контейнер упал. Логи:"
+        error "Контейнер упал или не смог поднять интерфейс. Логи:"
+        docker logs amneziawg
+        return 1
+    fi
+
+    # Проверка наличия интерфейса внутри контейнера
+    if ! docker exec amneziawg ip link show wg0 &>/dev/null; then
+        error "Интерфейс wg0 не найден внутри контейнера. Ошибка запуска. Логи:"
         docker logs amneziawg
         return 1
     fi
 
     log "Создание клиента..."
     local client_private_key=$(openssl rand -base64 32)
-    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "/usr/bin/awg" $image pubkey 2>/dev/null || echo "$client_private_key" | docker run --rm -i --entrypoint "/usr/bin/wg" $image pubkey)
+    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "" $image sh -c "$awg_bin pubkey")
     
-    # Регистрация пира
-    docker exec amneziawg sh -c "wg set wg0 peer $client_public_key allowed-ips 10.8.0.2/32"
+    # Добавление пира
+    docker exec amneziawg $awg_bin set wg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
     
     log "Генерация клиентского файла..."
     cat > "${AMN_DIR}/amnezia_client.conf" <<EOF
