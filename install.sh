@@ -34,11 +34,32 @@ on_exit() {
 trap on_exit EXIT
 
 main() {
+  # Инициализация переменных для предотвращения ошибок 'unbound variable'
+  DOMAIN=""
+  EMAIL=""
+  VPN_USER="vpnuser"
+  VPN_PASS=""
+  INSTALL_XUI="false"
+  INSTALL_OPENVPN="false"
+  INSTALL_OPENCONNECT="false"
+  INSTALL_AMNEZIA="false"
+  INSTALL_MODE="simple"
+  SSH_PORT="22"
+  NEW_USER=""
+  NEW_PASS=""
+  PANEL_ADMIN_USER=""
+  PANEL_ADMIN_PASS=""
+
   # 1. Начальные проверки
   module_base_check_os
   load_install_state
 
-  ui_banner
+  # Подтягиваем значения из загруженного состояния
+  resolve_var DOMAIN ""
+  resolve_var EMAIL ""
+  resolve_var VPN_USER "vpnuser"
+  resolve_var INSTALL_MODE "simple"
+  resolve_var SSH_PORT "22"
   
   # 2. Интерактивный сбор информации
   ui_select_components

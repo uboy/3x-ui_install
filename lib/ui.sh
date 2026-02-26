@@ -48,13 +48,13 @@ ui_select_components() {
 }
 
 ui_get_basic_info() {
-    DOMAIN=$(whiptail --title "Настройка домена" --inputbox "Введите домен или IP адрес сервера:" 10 60 "$DOMAIN" 3>&1 1>&2 2>&3)
-    EMAIL=$(whiptail --title "Настройка Email" --inputbox "Введите Email для Let's Encrypt:" 10 60 "$EMAIL" 3>&1 1>&2 2>&3)
+    DOMAIN=$(whiptail --title "Настройка домена" --inputbox "Введите домен или IP адрес сервера:" 10 60 "${DOMAIN:-}" 3>&1 1>&2 2>&3)
+    EMAIL=$(whiptail --title "Настройка Email" --inputbox "Введите Email для Let's Encrypt:" 10 60 "${EMAIL:-}" 3>&1 1>&2 2>&3)
     
     VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect/OpenVPN):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3)
     
     VPN_PASS=$(whiptail --title "VPN Пароль" --passwordbox "Введите пароль для VPN (оставьте пустым для автогенерации):" 10 60 3>&1 1>&2 2>&3)
-    if [[ -z "$VPN_PASS" ]]; then
+    if [[ -z "${VPN_PASS:-}" ]]; then
         VPN_PASS=$(generate_strong_secret)
     fi
     
