@@ -38,34 +38,30 @@ EOF
 module_xui_configure() {
     [[ "$INSTALL_XUI" == "true" ]] || return 0
     
-    log "Настройка 3x-ui через API..."
-    
+    log "Настройка параметров 3x-ui через API..."
     local panel_url="http://127.0.0.1:2053"
     
-    # 1. Попытка входа с дефолтными кредами или новыми
     if xui_api_login "admin" "admin" "$panel_url"; then
-        # Если вошли с дефолтными - меняем на сгенерированные
+        log "Смена стандартных учетных данных администратора..."
         local new_user="${PANEL_ADMIN_USER:-admin_$(generate_random_fixed 5 'a-z0-9' true)}"
         local new_pass="${PANEL_ADMIN_PASS:-$(generate_strong_secret)}"
         
         if xui_api_update_user "admin" "admin" "$new_user" "$new_pass" "$panel_url"; then
-            success "Администратор панели обновлен: $new_user"
+            success "Администратор панели изменен на: $new_user"
             PANEL_ADMIN_USER="$new_user"
             PANEL_ADMIN_PASS="$new_pass"
             save_install_state
         fi
     fi
 
-    # 2. Если включено авто-создание входящего подключения
     if [[ "${AUTO_CREATE_INBOUND:-true}" == "true" ]]; then
+        log "Создание автоматического VLESS Reality инбаунда..."
         local client_id=$(generate_uuid)
-        local settings="{\"clients\":[{\"id\":\"$client_id\",\"email\":\"default@$DOMAIN\",\"totalGB\":0,\"expiryTime\":0,\"enable\":true}]}"
-        
-        # Настройка Reality (базовый пример)
+        local settings="{\"clients\":[{\"id\":\"$client_id\",\"email\":\"${VPN_USER:-vpn}@$DOMAIN\",\"totalGB\":0,\"expiryTime\":0,\"enable\":true}]}"
         local stream_settings="{\"network\":\"tcp\",\"security\":\"reality\",\"realitySettings\":{\"show\":false,\"dest\":\"google.com:443\",\"serverNames\":[\"google.com\"],\"privateKey\":\"$(generate_random_fixed 32 'a-zA-Z0-9' false)\",\"shortIds\":[\"$(generate_random_fixed 8 '0-9a-f' true)\"]}}"
         
-        if xui_api_add_inbound "VLESS_REALITY_DEFAULT" "443" "vless" "$settings" "$stream_settings" "$panel_url"; then
-            success "Создано дефолтное Reality подключение на порту 443."
+        if xui_api_add_inbound "Aegis_VLESS_Reality" "443" "vless" "$settings" "$stream_settings" "$panel_url"; then
+            success "Инбаунд Aegis_VLESS_Reality создан на порту 443."
             firewall_allow 443
         fi
     fi

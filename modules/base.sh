@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 module_base_install() {
-  log "Installing base packages"
+  local packages=(adduser ca-certificates certbot curl fail2ban gnupg lsb-release openssl python3 sudo ufw)
+  log "Установка базовых пакетов: ${packages[*]}"
   apt-get update -y
-  apt-get install -y --no-install-recommends \
-    adduser ca-certificates certbot curl fail2ban gnupg lsb-release openssl python3 sudo ufw
+  apt-get install -y --no-install-recommends "${packages[@]}"
 }
 
 module_base_check_os() {

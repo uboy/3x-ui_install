@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 
 module_hardening_apply() {
-    log "Настройка безопасности системы..."
+    log "--- Начало настройки безопасности (Hardening) ---"
     
     # 1. Настройка Fail2Ban
+    log "Настройка Fail2Ban для защиты SSH..."
     apt-get install -y fail2ban
     cat > /etc/fail2ban/jail.d/sshd.local <<EOF
 [sshd]
@@ -17,30 +18,33 @@ banaction = ufw
 EOF
     systemctl enable --now fail2ban
     systemctl restart fail2ban
+    success "Fail2Ban настроен и запущен."
 
-    # 2. Создание пользователя если нужно (супер-безопасный режим)
+    # 2. Создание пользователя
     if [[ "$INSTALL_MODE" == "super-secure" ]]; then
-        [[ -n "$NEW_USER" ]] || NEW_USER="vpnadmin"
-        if ! id -u "$NEW_USER" >/dev/null 2>&1; then
-            log "Создание пользователя $NEW_USER..."
-            useradd -m -s /bin/bash "$NEW_USER"
-            [[ -n "$NEW_PASS" ]] || NEW_PASS=$(generate_strong_secret)
-            echo "$NEW_USER:$NEW_PASS" | chpasswd
-            usermod -aG sudo "$NEW_USER"
-            echo "$NEW_USER ALL=(ALL:ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-3xui-$NEW_USER"
+        local admin_user="${NEW_USER:-vpnadmin}"
+        if ! id -u "$admin_user" >/dev/null 2>&1; then
+            log "Создание администратора системы: $admin_user..."
+            useradd -m -s /bin/bash "$admin_user"
+            local admin_pass="${NEW_PASS:-$(generate_strong_secret)}"
+            echo "$admin_user:$admin_pass" | chpasswd
+            usermod -aG sudo "$admin_user"
+            echo "$admin_user ALL=(ALL:ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-aegis-$admin_user"
+            success "Пользователь $admin_user создан и добавлен в sudoers."
+            NEW_USER="$admin_user"
+            NEW_PASS="$admin_pass"
         fi
         
         # 3. Харденинг SSH
-        log "Настройка SSH (порт ${SSH_PORT:-22}, запрет root)..."
+        log "Применение настроек SSH (Порт: ${SSH_PORT:-22}, Root: No)..."
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
         sed -i "s/^#\?Port .*/Port ${SSH_PORT:-22}/" /etc/ssh/sshd_config
         sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin no/" /etc/ssh/sshd_config
         sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication yes/" /etc/ssh/sshd_config
         
-        # Добавляем в AllowUsers
         if ! grep -q "AllowUsers" /etc/ssh/sshd_config; then
-            echo "AllowUsers $NEW_USER" >> /etc/ssh/sshd_config
+            echo "AllowUsers $admin_user" >> /etc/ssh/sshd_config
         fi
-        
-        # Откладываем перезапуск SSH до момента включения фаервола
+        success "Конфигурация SSH обновлена (бекап в /etc/ssh/sshd_config.bak)."
     fi
 }

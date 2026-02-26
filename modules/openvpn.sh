@@ -49,5 +49,5 @@ module_openvpn_configure() {
     docker compose run --rm openvpn easyrsa build-client-full "$client_name" nopass
     docker compose run --rm openvpn ovpn_getclient "$client_name" > "$OVPN_DIR/${client_name}.ovpn"
     
-    success "Конфигурация клиента создана: $OVPN_DIR/${client_name}.ovpn"
+    success "Конфигурация клиента OpenVPN успешно создана: $OVPN_DIR/${client_name}.ovpn"
 }

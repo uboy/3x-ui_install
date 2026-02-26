@@ -52,9 +52,11 @@ EOF
     local client_public_key=$(echo "$client_private_key" | docker run --rm -i ghcr.io/amnezia-vpn/amneziawg-go wg pubkey)
     
     # Добавление пира на сервер
+    log "Добавление клиентского пира в AmneziaWG..."
     docker exec amneziawg wg set awg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
     
     # Создание клиентского конфига
+    log "Генерация файла конфигурации Amnezia (amnezia_client.conf)..."
     cat > "${AMN_DIR}/amnezia_client.conf" <<EOF
 [Interface]
 PrivateKey = $client_private_key
