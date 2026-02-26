@@ -3,6 +3,15 @@
 module_openconnect_install() {
     [[ "$INSTALL_OPENCONNECT" == "true" ]] || return 0
     
+    # Детекция существующей установки (пакет ocserv)
+    if dpkg -l ocserv &>/dev/null; then
+        if ! ui_ask_reinstall "OpenConnect (ocserv)"; then
+            log "Пропуск установки OpenConnect по желанию пользователя."
+            INSTALL_OPENCONNECT="skipped"
+            return 0
+        fi
+    fi
+
     log "Установка OpenConnect (ocserv) нативно..."
     apt-get install -y ocserv
     
@@ -76,5 +85,5 @@ EOF
     firewall_allow 4443 udp
     
     systemctl enable --now ocserv
-    success "OpenConnect запущен на порту 4443 (TCP/UDP). Пользователь: vpnuser, Пароль: $oc_pass"
+    success "OpenConnect успешно запущен и настроен на порту 4443."
 }

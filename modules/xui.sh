@@ -6,6 +6,15 @@ source "${SCRIPT_DIR}/lib/xui_api.sh"
 module_xui_install() {
     [[ "$INSTALL_XUI" == "true" ]] || return 0
     
+    # Детекция существующей установки
+    if docker ps -a --format '{{.Names}}' | grep -q "^3x-ui$"; then
+        if ! ui_ask_reinstall "3x-ui Panel"; then
+            log "Пропуск установки 3x-ui по желанию пользователя."
+            INSTALL_XUI="skipped"
+            return 0
+        fi
+    fi
+
     log "Установка 3x-ui (через Docker)..."
     
     # Подготовка директорий

@@ -79,8 +79,14 @@ main() {
   fi
 
   log "Шаг 6: Установка компонентов..."
-  if [[ "$INSTALL_XUI" == "true" ]]; then module_xui_install; module_xui_configure; fi
-  if [[ "$INSTALL_OPENVPN" == "true" ]]; then module_openvpn_install; module_openvpn_configure; fi
+  if [[ "$INSTALL_XUI" == "true" ]]; then 
+    module_xui_install
+    if [[ "$INSTALL_XUI" != "skipped" ]]; then module_xui_configure; fi
+  fi
+  if [[ "$INSTALL_OPENVPN" == "true" ]]; then 
+    module_openvpn_install
+    if [[ "$INSTALL_OPENVPN" != "skipped" ]]; then module_openvpn_configure; fi
+  fi
   if [[ "$INSTALL_OPENCONNECT" == "true" ]]; then module_openconnect_install; fi
   if [[ "$INSTALL_AMNEZIA" == "true" ]]; then module_amnezia_install; fi
 

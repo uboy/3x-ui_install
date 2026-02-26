@@ -78,47 +78,69 @@ ui_confirm_install() {
     fi
 }
 
+ui_ask_reinstall() {
+    local service_name="$1"
+    if whiptail --title "Сервис уже установлен" --yesno "Обнаружен уже установленный $service_name. Переустановить и настроить заново?\n\n(Выбор 'No' пропустит этот компонент)" 12 60; then
+        return 0 # Reinstall
+    else
+        return 1 # Skip
+    fi
+}
+
 ui_final_report() {
     local report=""
-    report="${BOLD}Aegis VPN Toolbox: Установка завершена!${NC}\n\n"
-    report="${report}${BLUE}--- Общие данные ---${NC}\n"
+    report="${BOLD}Aegis VPN Toolbox: Установка завершена успешно!${NC}\n"
+    report="${report}==============================================\n\n"
+    
+    report="${report}${BLUE}${BOLD}--- ОБЩИЕ ДАННЫЕ СЕРВЕРА ---${NC}\n"
     report="${report}Домен/IP: ${DOMAIN}\n"
-    if [[ "$INSTALL_MODE" == "super-secure" ]]; then
-        report="${report}SSH Пользователь: ${NEW_USER}\n"
-        report="${report}SSH Пароль: ${NEW_PASS}\n"
+    if [[ "${INSTALL_MODE:-}" == "super-secure" ]]; then
+        report="${report}SSH Пользователь: ${NEW_USER:-root}\n"
+        report="${report}SSH Пароль: ${NEW_PASS:-unchanged}\n"
         report="${report}SSH Порт: ${SSH_PORT:-22}\n"
     fi
     report="${report}\n"
 
     if [[ "$INSTALL_XUI" == "true" ]]; then
-        report="${report}${BLUE}--- 3x-ui Panel ---${NC}\n"
-        report="${report}URL: http://${DOMAIN}:2053\n"
-        report="${report}Админ: ${PANEL_ADMIN_USER}\n"
-        report="${report}Пароль: ${PANEL_ADMIN_PASS}\n\n"
+        report="${report}${BLUE}${BOLD}--- 3x-ui (Xray Panel) ---${NC}\n"
+        report="${report}Панель управления: http://${DOMAIN}:2053\n"
+        report="${report}Логин: ${PANEL_ADMIN_USER:-admin}\n"
+        report="${report}Пароль: ${PANEL_ADMIN_PASS:-admin}\n"
+        report="${report}VLESS Reality порт: 443\n\n"
+    elif [[ "$INSTALL_XUI" == "skipped" ]]; then
+        report="${report}${YELLOW}--- 3x-ui (Пропущено) ---${NC}\n\n"
     fi
 
     if [[ "$INSTALL_OPENVPN" == "true" ]]; then
-        report="${report}${BLUE}--- OpenVPN ---${NC}\n"
+        report="${report}${BLUE}${BOLD}--- OpenVPN ---${NC}\n"
+        report="${report}Протокол/Порт: UDP / 1194\n"
         report="${report}Пользователь: ${VPN_USER:-vpnuser}\n"
-        report="${report}Конфиг клиента: /opt/openvpn/${VPN_USER:-vpnuser}.ovpn\n"
-        report="${report}Порт: 1194 (UDP)\n\n"
+        report="${report}Файл конфигурации (.ovpn): /opt/openvpn/${VPN_USER:-vpnuser}.ovpn\n\n"
+    elif [[ "$INSTALL_OPENVPN" == "skipped" ]]; then
+        report="${report}${YELLOW}--- OpenVPN (Пропущено) ---${NC}\n\n"
     fi
 
     if [[ "$INSTALL_OPENCONNECT" == "true" ]]; then
-        report="${report}${BLUE}--- OpenConnect ---${NC}\n"
+        report="${report}${BLUE}${BOLD}--- OpenConnect (Cisco AnyConnect) ---${NC}\n"
         report="${report}Сервер: ${DOMAIN}:4443\n"
         report="${report}Пользователь: ${VPN_USER:-vpnuser}\n"
         report="${report}Пароль: ${VPN_PASS}\n\n"
+    elif [[ "$INSTALL_OPENCONNECT" == "skipped" ]]; then
+        report="${report}${YELLOW}--- OpenConnect (Пропущено) ---${NC}\n\n"
     fi
 
     if [[ "$INSTALL_AMNEZIA" == "true" ]]; then
-        report="${report}${BLUE}--- Amnezia VPN ---${NC}\n"
-        report="${report}Протокол: AmneziaWG\n"
+        report="${report}${BLUE}${BOLD}--- Amnezia VPN (AmneziaWG) ---${NC}\n"
         report="${report}Порт: 51820 (UDP)\n"
-        report="${report}Конфиг клиента: /opt/amnezia/amnezia_client.conf\n\n"
+        report="${report}Конфиг для клиента: /opt/amnezia/amnezia_client.conf\n"
+        report="${report}Примечание: Импортируйте этот файл в приложение Amnezia.\n\n"
+    elif [[ "$INSTALL_AMNEZIA" == "skipped" ]]; then
+        report="${report}${YELLOW}--- Amnezia VPN (Пропущено) ---${NC}\n\n"
     fi
 
-    whiptail --title "Aegis VPN Toolbox - Итоги" --msgbox "$(printf "$report")" 25 80
+    report="${report}${GREEN}${BOLD}Все пароли сохранены в файле состояния: /root/.aegis-vpn.state${NC}\n"
+
+    whiptail --title "Aegis VPN Toolbox - Итоговый отчет" --msgbox "$(printf "$report")" 28 85
     clear
     printf "$report"
 }

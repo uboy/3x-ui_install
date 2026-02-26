@@ -3,6 +3,15 @@
 module_openvpn_install() {
     [[ "$INSTALL_OPENVPN" == "true" ]] || return 0
     
+    # Детекция существующей установки
+    if docker ps -a --format '{{.Names}}' | grep -q "^openvpn$"; then
+        if ! ui_ask_reinstall "OpenVPN"; then
+            log "Пропуск установки OpenVPN по желанию пользователя."
+            INSTALL_OPENVPN="skipped"
+            return 0
+        fi
+    fi
+
     log "Установка OpenVPN (Docker)..."
     
     OVPN_DIR="/opt/openvpn"
@@ -49,5 +58,5 @@ module_openvpn_configure() {
     docker compose run --rm openvpn easyrsa build-client-full "$client_name" nopass
     docker compose run --rm openvpn ovpn_getclient "$client_name" > "$OVPN_DIR/${client_name}.ovpn"
     
-    success "Конфигурация клиента OpenVPN успешно создана: $OVPN_DIR/${client_name}.ovpn"
+    success "Конфигурация клиента OpenVPN успешно создана."
 }
