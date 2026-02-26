@@ -2,23 +2,32 @@
 
 # Библиотека для работы с whiptail (стандартное меню в Ubuntu)
 
+# ANSI colors for UI
+BOLD='\033[1m'
+UNDERLINE='\033[4m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
 ui_banner() {
     clear
     cat << "EOF"
-  ██████╗ ██╗  ██╗██╗   ██╗██╗      ██╗███╗   ██╗███████╗████████╗ █████╗ ██╗     ██╗     
-  ╚════██╗╚██╗██╔╝██║   ██║██║      ██║████╗  ██║██╔════╝╚══██╔══╝██╔══██╗██║     ██║     
-   █████╔╝ ╚███╔╝ ██║   ██║██║█████╗██║██╔██╗ ██║███████╗   ██║   ███████║██║     ██║     
-   ╚═══██╗ ██╔██╗ ██║   ██║██║╚════╝██║██║╚██╗██║╚════██║   ██║   ██╔══██║██║     ██║     
-  ██████╔╝██╔╝ ██╗╚██████╔╝██║      ██║██║ ╚████║███████║   ██║   ██║  ██║███████╗███████╗
-  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝      ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝
-                               Modular VPN Installer
+    ___              _      _   __ ____  _   __
+   /   | ___  ____ _(_)____| | / // __ \/ | / /
+  / /| |/ _ \/ __ `/ / ___/| |/ // /_/ /  |/ / 
+ / ___ /  __/ /_/ / (__  ) |  // ____/ /|  /  
+/_/  |_\___/\__, /_/____/  |_//_/   /_/ |_/   
+           /____/     VPN TOOLBOX
 EOF
+    printf "${BLUE}${BOLD}      --- Aegis VPN Toolbox ---${NC}\n"
     sleep 1
 }
 
 ui_select_components() {
     local choices
-    choices=$(whiptail --title "Выбор компонентов" --checklist \
+    choices=$(whiptail --title "Aegis VPN Toolbox - Выбор" --checklist \
     "Выберите компоненты для установки (Пробел - выбор, Enter - подтверждение):" 20 70 10 \
     "XUI" "3x-ui Panel (Xray/VLESS/Reality)" ON \
     "OpenVPN" "Классический OpenVPN сервер" OFF \
@@ -48,7 +57,7 @@ ui_select_components() {
 }
 
 ui_get_basic_info() {
-    DOMAIN=$(whiptail --title "Настройка домена" --inputbox "Введите домен или IP адрес сервера:" 10 60 "${DOMAIN:-}" 3>&1 1>&2 2>&3)
+    DOMAIN=$(whiptail --title "Настройка Aegis" --inputbox "Введите домен или IP адрес сервера:" 10 60 "${DOMAIN:-}" 3>&1 1>&2 2>&3)
     EMAIL=$(whiptail --title "Настройка Email" --inputbox "Введите Email для Let's Encrypt:" 10 60 "${EMAIL:-}" 3>&1 1>&2 2>&3)
     
     VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect/OpenVPN):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3)
@@ -62,7 +71,7 @@ ui_get_basic_info() {
 }
 
 ui_confirm_install() {
-    if whiptail --title "Подтверждение" --yesno "Начать установку выбранных компонентов?" 10 60; then
+    if whiptail --title "Aegis VPN Toolbox" --yesno "Начать установку выбранных компонентов?" 10 60; then
         return 0
     else
         exit 0
@@ -71,7 +80,7 @@ ui_confirm_install() {
 
 ui_final_report() {
     local report=""
-    report="${BOLD}Установка завершена успешно!${NC}\n\n"
+    report="${BOLD}Aegis VPN Toolbox: Установка завершена!${NC}\n\n"
     report="${report}${BLUE}--- Общие данные ---${NC}\n"
     report="${report}Домен/IP: ${DOMAIN}\n"
     if [[ "$INSTALL_MODE" == "super-secure" ]]; then
@@ -109,7 +118,7 @@ ui_final_report() {
         report="${report}Конфиг клиента: /opt/amnezia/amnezia_client.conf\n\n"
     fi
 
-    whiptail --title "Итоговая информация" --msgbox "$(printf "$report")" 25 80
+    whiptail --title "Aegis VPN Toolbox - Итоги" --msgbox "$(printf "$report")" 25 80
     clear
     printf "$report"
 }

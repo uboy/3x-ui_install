@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-STATE_FILE_DEFAULT="/root/.3x-ui-install.state"
+STATE_FILE_DEFAULT="/root/.aegis-vpn.state"
 INSTALL_STATE_FILE="${INSTALL_STATE_FILE:-$STATE_FILE_DEFAULT}"
 declare -A STATE_VALUES=()
 
@@ -101,10 +101,9 @@ save_install_state() {
     if [[ -z "$value" && -n "${STATE_VALUES[$key]+x}" ]]; then
         value="${STATE_VALUES[$key]}"
     fi
-    encoded="$(printf '%s' "$value" | base64 | tr -d '
-')"
-    printf '%s=%s
-' "$key" "$encoded" >> "$tmp_file"
+    # Use printf with -v or directly to avoid trailing newlines in base64
+    encoded=$(printf '%s' "$value" | base64 | tr -d '\n')
+    printf '%s=%s\n' "$key" "$encoded" >> "$tmp_file"
     saved_count=$((saved_count + 1))
   done
 
