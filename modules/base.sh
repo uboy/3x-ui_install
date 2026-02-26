@@ -3,7 +3,7 @@
 module_base_install() {
   log "Installing base packages"
   apt-get update -y
-  apt-get install -y --no-install-recommends 
+  apt-get install -y --no-install-recommends \
     adduser ca-certificates certbot curl fail2ban gnupg lsb-release openssl python3 sudo ufw
 }
 
