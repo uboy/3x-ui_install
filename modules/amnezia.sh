@@ -19,33 +19,25 @@ module_amnezia_install() {
 
     log "Установка AmneziaWG (Aegis Edition)..."
     mkdir -p "$AMN_DIR"
-    chmod 700 "$AMN_DIR"
     
     local image="amneziavpn/amnezia-wg"
     
-    log "Поиск инструментов внутри образа..."
-    # Находим полный путь к бинарнику awg
-    local awg_path=$(docker run --rm $image sh -c "command -v awg || command -v amnezia-wg || find / -name awg -type f 2>/dev/null | head -n 1")
-    # Находим полный путь к quick-скрипту
-    local quick_path=$(docker run --rm $image sh -c "command -v awg-quick || command -v amnezia-wg-quick || find / -name awg-quick -type f 2>/dev/null | head -n 1")
-
-    if [[ -z "$awg_path" || -z "$quick_path" ]]; then
-        error "Инструменты AmneziaWG не найдены в образе $image."
-        return 1
-    fi
-    log "Найдено: bin=$awg_path, quick=$quick_path"
-
     log "Генерация ключей..."
     local private_key=$(openssl rand -base64 32)
-    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "/bin/sh" $image -c "$awg_path pubkey")
+    # Прямая попытка получить публичный ключ
+    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "/usr/bin/awg" $image pubkey 2>/dev/null || echo "$private_key" | docker run --rm -i --entrypoint "/usr/bin/wg" $image pubkey)
     
+    if [[ -z "$public_key" ]]; then
+        error "Не удалось сгенерировать ключи. Образ $image не отвечает."
+        return 1
+    fi
+
     log "Создание конфигурации..."
     cat > "${AMN_DIR}/amneziawg.conf" <<EOF
 [Interface]
 PrivateKey = $private_key
 Address = 10.8.0.1/24
 ListenPort = 51820
-
 J1 = $(shuf -i 10-100 -n 1)
 J2 = $(shuf -i 10-100 -n 1)
 S1 = $(shuf -i 10-100 -n 1)
@@ -55,26 +47,22 @@ H2 = $(shuf -i 10000000-99999999 -n 1)
 H3 = $(shuf -i 10000000-99999999 -n 1)
 H4 = $(shuf -i 10000000-99999999 -n 1)
 EOF
-    chmod 600 "${AMN_DIR}/amneziawg.conf"
 
-    # Docker Compose с динамическим определением путей
+    # Создаем Docker Compose
+    # Мы используем команду, которая сначала подменяет wg на awg, а потом запускает стандартный wg-quick
     cat > "${AMN_DIR}/docker-compose.yml" <<EOF
 services:
   amneziawg:
     image: $image
     container_name: amneziawg
     privileged: true
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
     volumes:
-      - ./amneziawg.conf:/etc/wireguard/awg0.conf
-    # Подменяем пути и запускаем
+      - ./amneziawg.conf:/etc/wireguard/wg0.conf
     entrypoint: >
       /bin/sh -c "
-      ln -sf $awg_path /usr/bin/wg;
-      ln -sf $awg_path /usr/bin/awg;
-      $quick_path up awg0;
+      [ -f /usr/bin/awg ] && ln -sf /usr/bin/awg /usr/bin/wg;
+      [ -f /usr/bin/awg-quick ] && ln -sf /usr/bin/awg-quick /usr/bin/wg-quick;
+      wg-quick up wg0;
       tail -f /dev/null
       "
     ports:
@@ -82,11 +70,11 @@ services:
     restart: unless-stopped
 EOF
 
-    log "Запуск AmneziaWG..."
+    log "Запуск контейнера..."
     cd "$AMN_DIR"
     docker compose up -d
     
-    log "Ожидание инициализации (15 сек)..."
+    log "Ожидание (15 сек)..."
     sleep 15
 
     if ! docker ps --format '{{.Names}} {{.Status}}' | grep "amneziawg" | grep -q "Up"; then
@@ -95,14 +83,14 @@ EOF
         return 1
     fi
 
-    log "Создание клиентского профиля..."
+    log "Создание клиента..."
     local client_private_key=$(openssl rand -base64 32)
-    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "/bin/sh" $image -c "$awg_path pubkey")
+    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "/usr/bin/awg" $image pubkey 2>/dev/null || echo "$client_private_key" | docker run --rm -i --entrypoint "/usr/bin/wg" $image pubkey)
     
     # Регистрация пира
-    docker exec amneziawg $awg_path set awg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
+    docker exec amneziawg sh -c "wg set wg0 peer $client_public_key allowed-ips 10.8.0.2/32"
     
-    log "Генерация файла amnezia_client.conf..."
+    log "Генерация клиентского файла..."
     cat > "${AMN_DIR}/amnezia_client.conf" <<EOF
 [Interface]
 PrivateKey = $client_private_key
