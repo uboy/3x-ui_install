@@ -54,7 +54,12 @@ EOF
     # Создание пользователя
     local oc_user="${VPN_USER:-vpnuser}"
     local oc_pass="${VPN_PASS}"
-    printf "%s\n%s\n" "$oc_pass" "$oc_pass" | ocpasswd -c /etc/ocserv/ocpasswd "$oc_user"
+    
+    # Гарантируем, что файл существует
+    touch /etc/ocserv/ocpasswd
+    
+    # Используем --passwd для явного указания файла и передаем пароль дважды
+    (echo "$oc_pass"; echo "$oc_pass") | ocpasswd -c /etc/ocserv/ocpasswd "$oc_user"
     
     # Включаем IP Forwarding
     echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-ocserv.conf
