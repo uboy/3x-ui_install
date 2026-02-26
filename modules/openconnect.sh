@@ -55,11 +55,16 @@ EOF
     local oc_user="${VPN_USER:-vpnuser}"
     local oc_pass="${VPN_PASS}"
     
-    # Гарантируем, что файл существует
+    log "DEBUG: Параметры ocpasswd: user='$oc_user', file='/etc/ocserv/ocpasswd'"
     touch /etc/ocserv/ocpasswd
     
-    # Используем --passwd для явного указания файла и передаем пароль дважды
-    (echo "$oc_pass"; echo "$oc_pass") | ocpasswd -c /etc/ocserv/ocpasswd "$oc_user"
+    # Пытаемся запустить и логируем результат
+    if ! (echo "$oc_pass"; echo "$oc_pass") | ocpasswd -c /etc/ocserv/ocpasswd "$oc_user"; then
+        error "Критическая ошибка при выполнении ocpasswd для пользователя $oc_user"
+        # Выводим версию утилиты для отладки
+        ocpasswd --version || true
+        return 1
+    fi
     
     # Включаем IP Forwarding
     echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-ocserv.conf

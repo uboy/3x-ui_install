@@ -13,8 +13,18 @@ warn() { printf "[%s] ${YELLOW}WARN${NC}  %s
 " "$(date '+%F %T')" "$*"; }
 error() { printf "[%s] ${RED}ERROR${NC} %s
 " "$(date '+%F %T')" "$*"; }
-success() { printf "[%s] ${GREEN}OK${NC}    %s
-" "$(date '+%F %T')" "$*"; }
+success() { printf "[%s] ${GREEN}OK${NC}    %s\n" "$(date '+%F %T')" "$*"; }
+
+run_logged() {
+  local cmd_label="$1"
+  shift
+  log "Запуск: $cmd_label"
+  if ! "$@"; then
+    error "ОШИБКА: Команда '$cmd_label' (выполнялось: $*) завершилась неудачно."
+    return 1
+  fi
+  return 0
+}
 
 die() {
   local message="$*"
