@@ -4,26 +4,23 @@ set -Eeuo pipefail
 # Root directory of the installer
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Убеждаемся, что whiptail установлен для UI
-if ! command -v whiptail >/dev/null 2>&1; then
-    apt-get update && apt-get install -y whiptail
-fi
-
-# Source libraries
-source "${SCRIPT_DIR}/lib/common.sh"
-source "${SCRIPT_DIR}/lib/state.sh"
-source "${SCRIPT_DIR}/lib/utils.sh"
-source "${SCRIPT_DIR}/lib/ui.sh"
-source "${SCRIPT_DIR}/lib/firewall.sh"
-source "${SCRIPT_DIR}/lib/cert.sh"
+# Source libraries - ПРОВЕРКА НАЛИЧИЯ
+for f in common.sh state.sh utils.sh ui.sh firewall.sh cert.sh; do
+    if [[ ! -f "${SCRIPT_DIR}/lib/$f" ]]; then
+        echo "ERROR: Library ${SCRIPT_DIR}/lib/$f not found!"
+        exit 1
+    fi
+    source "${SCRIPT_DIR}/lib/$f"
+done
 
 # Source modules
-source "${SCRIPT_DIR}/modules/base.sh"
-source "${SCRIPT_DIR}/modules/hardening.sh"
-source "${SCRIPT_DIR}/modules/xui.sh"
-source "${SCRIPT_DIR}/modules/openvpn.sh"
-source "${SCRIPT_DIR}/modules/openconnect.sh"
-source "${SCRIPT_DIR}/modules/amnezia.sh"
+for f in base.sh hardening.sh xui.sh openvpn.sh openconnect.sh amnezia.sh; do
+    if [[ ! -f "${SCRIPT_DIR}/modules/$f" ]]; then
+        echo "ERROR: Module ${SCRIPT_DIR}/modules/$f not found!"
+        exit 1
+    fi
+    source "${SCRIPT_DIR}/modules/$f"
+done
 
 on_exit() {
   local rc=$?
@@ -34,7 +31,7 @@ on_exit() {
 trap on_exit EXIT
 
 main() {
-  # Инициализация переменных для предотвращения ошибок 'unbound variable'
+  # Инициализация
   DOMAIN=""
   EMAIL=""
   VPN_USER="vpnuser"
@@ -50,71 +47,52 @@ main() {
   PANEL_ADMIN_USER=""
   PANEL_ADMIN_PASS=""
 
-  # 1. Начальные проверки
+  log "Шаг 1: Проверка ОС и загрузка состояния..."
   module_base_check_os
   load_install_state
 
-  # Подтягиваем значения из загруженного состояния
   resolve_var DOMAIN ""
   resolve_var EMAIL ""
   resolve_var VPN_USER "vpnuser"
   resolve_var INSTALL_MODE "simple"
   resolve_var SSH_PORT "22"
+
+  ui_banner
   
-  # 2. Интерактивный сбор информации
+  log "Шаг 2: Сбор интерактивной информации..."
   ui_select_components
   ui_get_basic_info
   
-  # 3. Начало установки
+  log "Шаг 3: Подтверждение и начало установки..."
   ui_confirm_install
   
   module_base_install
   firewall_init
   
-  # 4. Применение безопасности (SSH, Fail2Ban)
+  log "Шаг 4: Настройка безопасности..."
   module_hardening_apply
   
-  # 5. Получение SSL сертификата (если нужно)
   if [[ "$INSTALL_XUI" == "true" || "$INSTALL_OPENCONNECT" == "true" ]]; then
+    log "Шаг 5: Получение сертификатов..."
     cert_install_tools
     cert_issue_standalone "$DOMAIN" "$EMAIL"
   fi
 
-  # 6. Установка и настройка выбранных модулей
-  
-  # 3x-ui
-  if [[ "$INSTALL_XUI" == "true" ]]; then
-    module_xui_install
-    module_xui_configure
-  fi
-  
-  # OpenVPN
-  if [[ "$INSTALL_OPENVPN" == "true" ]]; then
-    module_openvpn_install
-    module_openvpn_configure
-  fi
-  
-  # OpenConnect
-  if [[ "$INSTALL_OPENCONNECT" == "true" ]]; then
-    module_openconnect_install
-  fi
-  
-  # Amnezia
-  if [[ "$INSTALL_AMNEZIA" == "true" ]]; then
-    module_amnezia_install
-  fi
+  log "Шаг 6: Установка компонентов..."
+  if [[ "$INSTALL_XUI" == "true" ]]; then module_xui_install; module_xui_configure; fi
+  if [[ "$INSTALL_OPENVPN" == "true" ]]; then module_openvpn_install; module_openvpn_configure; fi
+  if [[ "$INSTALL_OPENCONNECT" == "true" ]]; then module_openconnect_install; fi
+  if [[ "$INSTALL_AMNEZIA" == "true" ]]; then module_amnezia_install; fi
 
-  # 7. Финализация фаервола
+  log "Шаг 7: Настройка фаервола..."
   firewall_allow "${SSH_PORT:-22}"
   firewall_enable
   
-  # Перезапуск SSH если меняли настройки
   if [[ "$INSTALL_MODE" == "super-secure" ]]; then
-     log "Перезапуск SSH сервиса..."
-     systemctl restart ssh || warn "Не удалось перезапустить SSH автоматически. Проверьте вручную."
+     systemctl restart ssh || true
   fi
 
-  # 8. Финальный отчет
+  log "Шаг 8: Завершение..."
   ui_final_report
 }
 
