@@ -23,10 +23,21 @@ module_amnezia_install() {
     
     local image="amneziavpn/amnezia-wg"
     
+    log "Поиск инструментов внутри образа..."
+    # Находим полный путь к бинарнику awg
+    local awg_path=$(docker run --rm $image sh -c "command -v awg || command -v amnezia-wg || find / -name awg -type f 2>/dev/null | head -n 1")
+    # Находим полный путь к quick-скрипту
+    local quick_path=$(docker run --rm $image sh -c "command -v awg-quick || command -v amnezia-wg-quick || find / -name awg-quick -type f 2>/dev/null | head -n 1")
+
+    if [[ -z "$awg_path" || -z "$quick_path" ]]; then
+        error "Инструменты AmneziaWG не найдены в образе $image."
+        return 1
+    fi
+    log "Найдено: bin=$awg_path, quick=$quick_path"
+
     log "Генерация ключей..."
     local private_key=$(openssl rand -base64 32)
-    # Получаем публичный ключ через awg
-    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "/bin/sh" $image -c "awg pubkey || /usr/bin/awg pubkey")
+    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "/bin/sh" $image -c "$awg_path pubkey")
     
     log "Создание конфигурации..."
     cat > "${AMN_DIR}/amneziawg.conf" <<EOF
@@ -46,7 +57,7 @@ H4 = $(shuf -i 10000000-99999999 -n 1)
 EOF
     chmod 600 "${AMN_DIR}/amneziawg.conf"
 
-    # Docker Compose с подменой бинарника
+    # Docker Compose с динамическим определением путей
     cat > "${AMN_DIR}/docker-compose.yml" <<EOF
 services:
   amneziawg:
@@ -58,11 +69,12 @@ services:
       - SYS_MODULE
     volumes:
       - ./amneziawg.conf:/etc/wireguard/awg0.conf
-    # Подменяем wg на awg внутри контейнера, чтобы wg-quick работал корректно
+    # Подменяем пути и запускаем
     entrypoint: >
       /bin/sh -c "
-      ln -sf /usr/bin/awg /usr/bin/wg;
-      awg-quick up awg0 || wg-quick up awg0;
+      ln -sf $awg_path /usr/bin/wg;
+      ln -sf $awg_path /usr/bin/awg;
+      $quick_path up awg0;
       tail -f /dev/null
       "
     ports:
@@ -74,21 +86,21 @@ EOF
     cd "$AMN_DIR"
     docker compose up -d
     
-    log "Ожидание (15 сек)..."
+    log "Ожидание инициализации (15 сек)..."
     sleep 15
 
     if ! docker ps --format '{{.Names}} {{.Status}}' | grep "amneziawg" | grep -q "Up"; then
-        error "Контейнер упал. Последние логи:"
+        error "Контейнер упал. Логи:"
         docker logs amneziawg
         return 1
     fi
 
-    log "Создание клиента..."
+    log "Создание клиентского профиля..."
     local client_private_key=$(openssl rand -base64 32)
-    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "/bin/sh" $image -c "awg pubkey")
+    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "/bin/sh" $image -c "$awg_path pubkey")
     
-    # Добавление пира
-    docker exec amneziawg awg set awg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
+    # Регистрация пира
+    docker exec amneziawg $awg_path set awg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
     
     log "Генерация файла amnezia_client.conf..."
     cat > "${AMN_DIR}/amnezia_client.conf" <<EOF
