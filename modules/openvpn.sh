@@ -21,29 +21,32 @@ module_openvpn_install() {
     mkdir -p "$OVPN_DIR"
     
     # 1. Генерация конфига
-    # Добавляем принудительный пуш DNS и топологию
+    # ovpn_genconfig уже добавляет: dhcp-option DNS, block-outside-dns, redirect-gateway def1
+    # НЕ дублируем их вручную — это вызовет конфликт маршрутов
     docker run -v "$OVPN_DIR:/etc/openvpn" --rm kylemanna/openvpn ovpn_genconfig -u "udp://$DOMAIN" -n 8.8.8.8 -n 1.1.1.1
-    
-    # Тюнинг конфига сервера
-    log "Настройка параметров OpenVPN сервера..."
-    {
-        echo "push \"dhcp-option DNS 8.8.8.8\""
-        echo "push \"dhcp-option DNS 1.1.1.1\""
-        echo "push \"block-outside-dns\""
-        
-        # Split Tunneling (Исключения локальных сетей)
-        echo 'push "route 192.168.0.0 255.255.0.0 net_gateway"'
-        echo 'push "route 10.0.0.0 255.0.0.0 net_gateway"'
-        echo 'push "route 172.16.0.0 255.240.0.0 net_gateway"'
-        
-        if [[ -n "${VPN_EXCLUDE_ROUTES:-}" ]]; then
-            IFS=',' read -ra ADDR <<< "$VPN_EXCLUDE_ROUTES"
-            for i in "${ADDR[@]}"; do
-                local ip=$(echo "$i" | xargs | cut -d'/' -f1)
-                echo "push \"route $ip 255.255.255.255 net_gateway\""
+
+    # Добавляем пользовательские исключения маршрутов (split-tunnel для кастомных сетей)
+    # ВАЖНО: net_gateway маршруты работают только при полном туннеле (redirect-gateway def1)
+    # и означают "эту сеть NOT через VPN, а через локальный шлюз"
+    if [[ -n "${VPN_EXCLUDE_ROUTES:-}" ]]; then
+        log "Добавление пользовательских исключений маршрутов..."
+        {
+            IFS=',' read -ra _exclude_addrs <<< "$VPN_EXCLUDE_ROUTES"
+            for _cidr in "${_exclude_addrs[@]}"; do
+                _cidr="${_cidr// /}"  # trim spaces
+                [[ -z "$_cidr" ]] && continue
+                local _ip _prefix _mask _a _b _c _d
+                _ip="${_cidr%%/*}"
+                _prefix="${_cidr##*/}"
+                # Convert prefix length to dotted-decimal netmask
+                _mask=$(python3 -c "import ipaddress; print(str(ipaddress.IPv4Network('0.0.0.0/${_prefix}').netmask))" 2>/dev/null) || {
+                    warn "Не удалось вычислить маску для ${_cidr}, пропускаем"
+                    continue
+                }
+                echo "push \"route ${_ip} ${_mask} net_gateway\""
             done
-        fi
-    } >> "$OVPN_DIR/openvpn.conf"
+        } >> "$OVPN_DIR/openvpn.conf"
+    fi
 
     log "Генерация ключей PKI..."
     echo -e "\n\n\n\n\n\n\n\n" | docker run -v "$OVPN_DIR:/etc/openvpn" --rm -i kylemanna/openvpn ovpn_initpki nopass
