@@ -3,52 +3,60 @@
 module_openconnect_install() {
     [[ "$INSTALL_OPENCONNECT" == "true" ]] || return 0
     
-    # Детекция существующей установки (пакет ocserv)
+    # 1. Глубокая очистка при переустановке
     if dpkg -l ocserv &>/dev/null; then
         if ! ui_ask_reinstall "OpenConnect (ocserv)"; then
-            log "Пропуск установки OpenConnect по желанию пользователя."
+            log "Пропуск установки OpenConnect."
             INSTALL_OPENCONNECT="skipped"
             return 0
         fi
         log "Полное удаление старой установки ocserv..."
         systemctl stop ocserv 2>/dev/null || true
-        apt-get purge -y ocserv || true
+        # Удаляем директории ДО purge, чтобы dpkg не жаловался на "not empty"
         rm -rf /etc/ocserv
         rm -rf /run/ocserv
+        apt-get purge -y ocserv || true
     fi
 
     log "Установка OpenConnect (ocserv) нативно..."
     apt-get update && apt-get install -y ocserv
     
-    # Пути сертификатов (поддержка IP и Доменов)
-    local cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-    local key_path="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+    # 2. Подготовка сертификатов
+    local cert_dir="/etc/letsencrypt/live/$DOMAIN"
+    local cert_path="${cert_dir}/fullchain.pem"
+    local key_path="${cert_dir}/privkey.pem"
     
-    # Если сертификатов нет (например, не запускали cert_issue), создаем self-signed
+    mkdir -p "$cert_dir"
     if [[ ! -f "$cert_path" ]]; then
-        warn "Сертификаты не найдены в $cert_path. Создаем временные..."
-        mkdir -p "/etc/letsencrypt/live/$DOMAIN"
+        warn "Сертификаты не найдены. Генерируем временные..."
         openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
             -keyout "$key_path" -out "$cert_path" \
             -subj "/CN=$DOMAIN"
         chmod 600 "$key_path"
     fi
 
-    # Настройка конфигурации
+    # 3. Генерация ПРАВИЛЬНОГО конфига (исправлено для Ubuntu 24.04)
     log "Настройка конфигурации ocserv..."
     cat > /etc/ocserv/ocserv.conf <<EOF
+# Способ аутентификации
 auth = "plain[passwd=/etc/ocserv/ocpasswd]"
+
+# Сетевые настройки
 tcp-port = 4443
 udp-port = 4443
+device = vpns
+socket-file = /run/ocserv.socket
 run-as-user = ocserv
 run-as-group = ocserv
-# socket-file отключен для избежания проблем с правами в Ubuntu 24.04
-# socket-file = /run/ocserv.socket
+
+# Сертификаты
 server-cert = $cert_path
 server-key = $key_path
 ca-cert = $cert_path
+
+# Лимиты и тайм-ауты
 isolate-workers = true
-max-clients = 16
+max-clients = 64
 max-same-clients = 2
 keepalive = 32400
 dpd = 90
@@ -56,31 +64,33 @@ mobile-dpd = 1800
 try-mtu-discovery = true
 idle-timeout = 1200
 mobile-idle-timeout = 2400
+
+# Настройки IP
 cert-user-oid = 2.5.4.3
 default-domain = $DOMAIN
 ipv4-network = 192.168.10.0
 ipv4-netmask = 255.255.255.0
 dns = 8.8.8.8
 dns = 1.1.1.1
-route = default
+predictable-ips = true
+ping-leases = false
+
+# Совместимость
 cisco-client-compat = true
 dtls-psk = true
+route = default
 EOF
 
-    # Создание пользователя
+    # 4. Создание пользователя
     local oc_user="${VPN_USER:-vpnuser}"
     local oc_pass="${VPN_PASS}"
-    log "DEBUG: Регистрация пользователя $oc_user в ocserv..."
     touch /etc/ocserv/ocpasswd
     (echo "$oc_pass"; echo "$oc_pass") | ocpasswd -c /etc/ocserv/ocpasswd "$oc_user"
     
-    # Включаем IP Forwarding
-    log "Включение IP Forwarding..."
+    # 5. Сеть (IP Forwarding и NAT)
     echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-ocserv.conf
     sysctl -p /etc/sysctl.d/99-ocserv.conf 2>/dev/null || true
     
-    # Настройка NAT (важно для работы интернета через VPN)
-    # Пытаемся определить основной интерфейс
     local eth=$(ip route get 8.8.8.8 | grep -oP 'dev \K\S+' | head -n 1)
     if [[ -n "$eth" ]]; then
         iptables -t nat -A POSTROUTING -s 192.168.10.0/24 -o "$eth" -j MASQUERADE 2>/dev/null || true
@@ -89,17 +99,19 @@ EOF
     firewall_allow 4443 tcp
     firewall_allow 4443 udp
     
+    # 6. Запуск и проверка
     log "Запуск сервиса ocserv..."
+    mkdir -p /run/ocserv # Гарантируем наличие папки для сокета
     systemctl daemon-reload
     systemctl enable ocserv
     systemctl restart ocserv
     
-    # Проверка запуска
-    sleep 2
+    sleep 3
     if ! systemctl is-active --quiet ocserv; then
-        error "Сервис ocserv не смог запуститься. Проверьте 'journalctl -u ocserv'"
+        error "Сервис ocserv не запустился. Повторная проверка логов..."
+        journalctl -u ocserv --no-pager | tail -n 10
         return 1
     fi
 
-    success "OpenConnect успешно запущен и настроен на порту 4443."
+    success "OpenConnect успешно запущен на порту 4443."
 }
