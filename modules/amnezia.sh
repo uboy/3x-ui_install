@@ -17,28 +17,32 @@ module_amnezia_install() {
         rm -rf "$AMN_DIR"
     fi
 
-    log "Установка AmneziaWG (Stable Community Edition)..."
+    log "Установка AmneziaWG (Aegis Multi-Image Loader)..."
     mkdir -p "$AMN_DIR"
     
-    # Используем стабильный образ от известного мейнтейнера teddysun
-    local image="teddysun/amnezia-wg:latest"
-    
-    log "Скачивание образа $image..."
-    if ! docker pull "$image"; then
-        error "Не удалось скачать образ $image. Попробуйте выполнить 'docker pull $image' вручную."
+    # Список образов для перебора (от самого надежного к запасному)
+    local images=("nikolaydyadya/amnezia-wg:latest" "amneziavpn/amnezia-wg:master" "pantonis/amnezia-wg:latest")
+    local working_image=""
+
+    for img in "${images[@]}"; do
+        log "Попытка использовать образ: $img..."
+        if docker pull "$img" && docker run --rm "$img" which awg >/dev/null 2>&1; then
+            working_image="$img"
+            success "Найден рабочий образ AmneziaWG: $img"
+            break
+        fi
+        warn "Образ $img не подходит или не доступен."
+    done
+
+    if [[ -z "$working_image" ]]; then
+        error "Не удалось найти рабочий Docker-образ AmneziaWG. Проверьте интернет или доступ к Docker Hub."
         return 1
     fi
 
     log "Генерация ключей..."
     local private_key=$(openssl rand -base64 32)
-    # В этом образе бинарник называется awg
-    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "awg" "$image" pubkey)
+    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "awg" "$working_image" pubkey)
     
-    if [[ -z "$public_key" ]]; then
-        error "Ошибка генерации ключей. Образ может быть несовместим."
-        return 1
-    fi
-
     log "Создание конфигурации..."
     cat > "${AMN_DIR}/amneziawg.conf" <<EOF
 [Interface]
@@ -60,7 +64,7 @@ EOF
     cat > "${AMN_DIR}/docker-compose.yml" <<EOF
 services:
   amneziawg:
-    image: $image
+    image: $working_image
     container_name: amneziawg
     privileged: true
     cap_add:
@@ -68,34 +72,34 @@ services:
       - SYS_MODULE
     volumes:
       - ./amneziawg.conf:/etc/wireguard/wg0.conf
-    # Этот образ ожидает стандартный запуск или awg-quick
-    command: awg-quick up wg0
+    # Используем awg-quick для запуска
+    entrypoint: /bin/sh -c "awg-quick up wg0 && tail -f /dev/null"
     ports:
       - "51820:51820/udp"
     restart: unless-stopped
 EOF
 
-    log "Запуск AmneziaWG..."
+    log "Запуск контейнера..."
     cd "$AMN_DIR"
     docker compose up -d
     
-    log "Ожидание (10 сек)..."
+    log "Ожидание инициализации (10 сек)..."
     sleep 10
 
     if ! docker ps --format '{{.Names}} {{.Status}}' | grep "amneziawg" | grep -q "Up"; then
-        error "Контейнер упал. Проверьте логи: 'docker logs amneziawg'"
-        docker logs amneziawg | tail -n 20
+        error "Контейнер упал. Логи:"
+        docker logs amneziawg
         return 1
     fi
 
     log "Создание клиента..."
     local client_private_key=$(openssl rand -base64 32)
-    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "awg" "$image" pubkey)
+    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "awg" "$working_image" pubkey)
     
-    # Регистрация пира через awg
+    # Добавление пира через awg
     docker exec amneziawg awg set wg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
     
-    log "Генерация файла amnezia_client.conf..."
+    log "Генерация amnezia_client.conf..."
     cat > "${AMN_DIR}/amnezia_client.conf" <<EOF
 [Interface]
 PrivateKey = $client_private_key
@@ -117,5 +121,5 @@ AllowedIPs = 0.0.0.0/0
 EOF
 
     firewall_allow 51820 udp
-    success "AmneziaWG успешно настроен."
+    success "AmneziaWG успешно настроен на базе образа ${working_image}."
 }
