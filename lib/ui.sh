@@ -64,6 +64,8 @@ ui_get_basic_info() {
     if [[ -z "${VPN_PASS:-}" ]]; then
         VPN_PASS=$(generate_strong_secret)
     fi
+
+    VPN_EXCLUDE_ROUTES=$(whiptail --title "Исключения маршрутов" --inputbox "Введите через запятую сети для исключения из VPN (напр. 1.1.1.1/32, 10.0.0.0/8). По умолчанию 192.168.0.0/16 уже исключена." 12 60 "${VPN_EXCLUDE_ROUTES:-}" 3>&1 1>&2 2>&3)
     
     save_install_state
 }

@@ -72,6 +72,22 @@ ipv4-network = 192.168.10.0
 ipv4-netmask = 255.255.255.0
 dns = 8.8.8.8
 dns = 1.1.1.1
+
+# Исключения (Split Tunneling)
+no-route = 192.168.0.0/255.255.0.0
+no-route = 10.0.0.0/255.0.0.0
+no-route = 172.16.0.0/255.240.0.0
+EOF
+
+    # Добавляем пользовательские исключения в ocserv
+    if [[ -n "${VPN_EXCLUDE_ROUTES:-}" ]]; then
+        IFS=',' read -ra ADDR <<< "$VPN_EXCLUDE_ROUTES"
+        for i in "${ADDR[@]}"; do
+            echo "no-route = $(echo "$i" | xargs)" >> /etc/ocserv/ocserv.conf
+        done
+    fi
+
+    cat >> /etc/ocserv/ocserv.conf <<EOF
 predictable-ips = true
 ping-leases = false
 
