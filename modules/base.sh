@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 module_base_install() {
-  local packages=(adduser ca-certificates certbot curl fail2ban gnupg lsb-release openssl python3 sudo ufw iptables)
+  local packages=(adduser ca-certificates certbot curl fail2ban gnupg jq lsb-release openssl python3 sudo ufw iptables)
   log "Установка базовых пакетов: ${packages[*]}"
   apt-get update -y
   apt-get install -y --no-install-recommends "${packages[@]}"

@@ -87,11 +87,8 @@ save_install_state() {
   state_dir="$(dirname "$state_file")"
   mkdir -p "$state_dir"
 
-  tmp_file="$(mktemp /tmp/3xui-state.XXXXXX 2>/dev/null || true)"
-  if [[ -z "$tmp_file" ]]; then
-    return 0
-  fi
-  chmod 600 "$tmp_file" 2>/dev/null || true
+  tmp_file="$(mktemp -p /root .3xui-state.XXXXXX)" || { error "Cannot create temp state file in /root"; return 1; }
+  chmod 600 "$tmp_file" || { rm -f "$tmp_file"; return 1; }
 
   for key in "${STATE_TRACKED_KEYS[@]}"; do
     if [[ "$include_secrets" != "true" ]] && state_key_is_secret "$key"; then

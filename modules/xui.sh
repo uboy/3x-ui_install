@@ -22,7 +22,14 @@ module_xui_install() {
 
     log "Установка 3x-ui (через Docker)..."
     mkdir -p "$PANEL_DIR/db" "$PANEL_DIR/cert"
-    
+
+    # Generate credentials BEFORE writing docker-compose to avoid admin:admin window
+    local new_user new_pass
+    new_user="${PANEL_ADMIN_USER:-admin_$(generate_random_fixed 5 'a-z0-9' true)}"
+    new_pass="${PANEL_ADMIN_PASS:-$(generate_strong_secret)}"
+    PANEL_ADMIN_USER="$new_user"
+    PANEL_ADMIN_PASS="$new_pass"
+
     # Генерация конфига Docker Compose
     cat > "${PANEL_DIR}/docker-compose.yml" <<EOF
 services:
@@ -33,44 +40,56 @@ services:
       - ./db:/etc/x-ui
       - ./cert:/root/cert
     environment:
-      - X_UI_ADMIN_USER=${PANEL_ADMIN_USER:-admin}
-      - X_UI_ADMIN_PWD=${PANEL_ADMIN_PASS:-admin}
+      - X_UI_ADMIN_USER=${new_user}
+      - X_UI_ADMIN_PWD=${new_pass}
     restart: unless-stopped
     network_mode: host
 EOF
 
     cd "$PANEL_DIR"
     docker compose up -d
-    
+
     log "Ожидание готовности панели..."
-    sleep 5
+    local attempts=0
+    until curl -sf --max-time 2 "http://127.0.0.1:2053/" >/dev/null 2>&1 || (( ++attempts >= 30 )); do
+        sleep 2
+    done
+    if (( attempts >= 30 )); then
+        error "Панель 3x-ui не ответила за 60 секунд"
+        docker logs 3x-ui | tail -20
+        return 1
+    fi
 }
 
 module_xui_configure() {
     [[ "$INSTALL_XUI" == "true" ]] || return 0
-    
+
     log "Настройка параметров 3x-ui через API..."
     local panel_url="http://127.0.0.1:2053"
-    
-    if xui_api_login "admin" "admin" "$panel_url"; then
-        log "Смена стандартных учетных данных администратора..."
-        local new_user="${PANEL_ADMIN_USER:-admin_$(generate_random_fixed 5 'a-z0-9' true)}"
-        local new_pass="${PANEL_ADMIN_PASS:-$(generate_strong_secret)}"
-        
-        if xui_api_update_user "admin" "admin" "$new_user" "$new_pass" "$panel_url"; then
-            success "Администратор панели изменен на: $new_user"
-            PANEL_ADMIN_USER="$new_user"
-            PANEL_ADMIN_PASS="$new_pass"
-            save_install_state
-        fi
+
+    # Login with pre-generated credentials (set during module_xui_install)
+    if xui_api_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$panel_url"; then
+        success "Аутентификация в панели успешна (пользователь: $PANEL_ADMIN_USER)."
+        save_install_state
+    else
+        error "Не удалось войти в панель с предустановленными учетными данными."
+        return 1
     fi
 
     if [[ "${AUTO_CREATE_INBOUND:-true}" == "true" ]]; then
         log "Создание автоматического VLESS Reality инбаунда..."
-        local client_id=$(generate_uuid)
-        local settings="{\"clients\":[{\"id\":\"$client_id\",\"email\":\"${VPN_USER:-vpn}@$DOMAIN\",\"totalGB\":0,\"expiryTime\":0,\"enable\":true}]}"
-        local stream_settings="{\"network\":\"tcp\",\"security\":\"reality\",\"realitySettings\":{\"show\":false,\"dest\":\"google.com:443\",\"serverNames\":[\"google.com\"],\"privateKey\":\"$(generate_random_fixed 32 'a-zA-Z0-9' false)\",\"shortIds\":[\"$(generate_random_fixed 8 '0-9a-f' true)\"]}}"
-        
+        local client_id
+        client_id=$(generate_uuid)
+        local settings stream_settings
+        settings=$(jq -cn \
+            --arg id "$client_id" \
+            --arg email "${VPN_USER:-vpn}@${DOMAIN}" \
+            '{clients:[{id:$id,email:$email,totalGB:0,expiryTime:0,enable:true}]}')
+        stream_settings=$(jq -cn \
+            --arg pk "$(generate_random_fixed 32 'a-zA-Z0-9' false)" \
+            --arg sid "$(generate_random_fixed 8 '0-9a-f' true)" \
+            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"google.com:443",serverNames:["google.com"],privateKey:$pk,shortIds:[$sid]}}')
+
         if xui_api_add_inbound "Aegis_VLESS_Reality" "443" "vless" "$settings" "$stream_settings" "$panel_url"; then
             success "Инбаунд Aegis_VLESS_Reality создан на порту 443."
             firewall_allow 443

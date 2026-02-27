@@ -17,15 +17,29 @@ cert_issue_standalone() {
             -keyout "/etc/letsencrypt/live/$domain/privkey.pem" \
             -out "/etc/letsencrypt/live/$domain/fullchain.pem" \
             -subj "/CN=$domain"
+        chmod 600 "/etc/letsencrypt/live/$domain/privkey.pem"
+        chmod 644 "/etc/letsencrypt/live/$domain/fullchain.pem"
         success "Самоподписанный сертификат для IP $domain создан."
         return 0
     fi
 
     log "Получение SSL сертификата Let's Encrypt для $domain..."
-    
+
+    # Pre-flight: network connectivity to Let's Encrypt
+    if ! curl -sf --max-time 5 https://acme-v02.api.letsencrypt.org/directory >/dev/null; then
+        error "Нет подключения к Let's Encrypt API (acme-v02.api.letsencrypt.org)"
+        return 1
+    fi
+
+    # Pre-flight: DNS resolution
+    if ! getent hosts "$domain" >/dev/null 2>&1; then
+        error "Домен $domain не резолвится — проверьте DNS записи"
+        return 1
+    fi
+
     # Останавливаем временно службы на 80 порту если есть
     if command -v nginx >/dev/null 2>&1; then systemctl stop nginx; fi
-    
+
     # Запуск certbot
     if certbot certonly --standalone \
         --non-interactive --agree-tos --email "$email" \

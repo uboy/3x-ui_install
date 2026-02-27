@@ -55,18 +55,69 @@ ui_select_components() {
 }
 
 ui_get_basic_info() {
-    DOMAIN=$(whiptail --title "Настройка Aegis" --inputbox "Введите домен или IP адрес сервера:" 10 60 "${DOMAIN:-}" 3>&1 1>&2 2>&3)
-    EMAIL=$(whiptail --title "Настройка Email" --inputbox "Введите Email для Let's Encrypt:" 10 60 "${EMAIL:-}" 3>&1 1>&2 2>&3)
-    
-    VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect/OpenVPN):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3)
-    
-    VPN_PASS=$(whiptail --title "VPN Пароль" --passwordbox "Введите пароль для VPN (оставьте пустым для автогенерации):" 10 60 3>&1 1>&2 2>&3)
-    if [[ -z "${VPN_PASS:-}" ]]; then
-        VPN_PASS=$(generate_strong_secret)
+    # DOMAIN — loop until valid
+    while true; do
+        DOMAIN=$(whiptail --title "Настройка Aegis" --inputbox "Введите домен или IP адрес сервера:" 10 60 "${DOMAIN:-}" 3>&1 1>&2 2>&3)
+        if is_valid_domain "$DOMAIN"; then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox "Некорректный домен или IP: '${DOMAIN}'\nПример: example.com или 1.2.3.4" 10 60
+    done
+
+    # EMAIL — required only for XUI or OpenConnect (Let's Encrypt)
+    if [[ "${INSTALL_XUI:-false}" == "true" || "${INSTALL_OPENCONNECT:-false}" == "true" ]]; then
+        while true; do
+            EMAIL=$(whiptail --title "Настройка Email" --inputbox "Введите Email для Let's Encrypt:" 10 60 "${EMAIL:-}" 3>&1 1>&2 2>&3)
+            if is_valid_email "$EMAIL"; then
+                break
+            fi
+            whiptail --title "Ошибка" --msgbox "Некорректный email: '${EMAIL}'\nПример: user@example.com" 10 60
+        done
     fi
 
-    VPN_EXCLUDE_ROUTES=$(whiptail --title "Исключения маршрутов" --inputbox "Введите через запятую сети для исключения из VPN (напр. 1.1.1.1/32, 10.0.0.0/8). По умолчанию 192.168.0.0/16 уже исключена." 12 60 "${VPN_EXCLUDE_ROUTES:-}" 3>&1 1>&2 2>&3)
-    
+    # VPN_USER — loop until valid
+    while true; do
+        VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect/OpenVPN):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3)
+        if is_valid_username "$VPN_USER"; then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox "Некорректное имя пользователя: '${VPN_USER}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." 12 60
+    done
+
+    # VPN_PASS — enforce minimum 12 chars if entered manually
+    while true; do
+        VPN_PASS=$(whiptail --title "VPN Пароль" --passwordbox "Введите пароль для VPN (оставьте пустым для автогенерации, мин. 12 символов):" 10 60 3>&1 1>&2 2>&3)
+        if [[ -z "${VPN_PASS:-}" ]]; then
+            VPN_PASS=$(generate_strong_secret)
+            break
+        elif (( ${#VPN_PASS} >= 12 )); then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox "Пароль слишком короткий. Минимум 12 символов, либо оставьте пустым для автогенерации." 10 60
+    done
+
+    # VPN_EXCLUDE_ROUTES — validate each CIDR token
+    while true; do
+        VPN_EXCLUDE_ROUTES=$(whiptail --title "Исключения маршрутов" --inputbox "Введите через запятую сети для исключения из VPN (напр. 1.1.1.1/32, 10.0.0.0/8). По умолчанию 192.168.0.0/16 уже исключена." 12 60 "${VPN_EXCLUDE_ROUTES:-}" 3>&1 1>&2 2>&3)
+        if [[ -z "${VPN_EXCLUDE_ROUTES:-}" ]]; then
+            break
+        fi
+        local _bad_cidr="" _cidr_token=""
+        IFS=',' read -ra _cidr_tokens <<< "$VPN_EXCLUDE_ROUTES"
+        for _cidr_token in "${_cidr_tokens[@]}"; do
+            _cidr_token="${_cidr_token// /}"  # trim spaces
+            [[ -z "$_cidr_token" ]] && continue
+            if ! is_valid_cidr "$_cidr_token"; then
+                _bad_cidr="$_cidr_token"
+                break
+            fi
+        done
+        if [[ -z "$_bad_cidr" ]]; then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox "Некорректный CIDR: '${_bad_cidr}'\nПример: 10.0.0.0/8" 10 60
+    done
+
     save_install_state
 }
 

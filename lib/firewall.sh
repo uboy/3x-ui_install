@@ -13,48 +13,55 @@ firewall_init() {
 
 firewall_configure_nat() {
     local subnet="$1"
-    local eth=$(ip route get 8.8.8.8 | grep -oP 'dev \K\S+' | head -n 1)
-    
+    local eth
+    eth=$(ip route get 8.8.8.8 | grep -oP 'dev \K\S+' | head -n 1)
+
     if [[ -z "$eth" ]]; then
         warn "Не удалось определить сетевой интерфейс для NAT."
         return 1
     fi
 
+    # Validate inputs before touching system files
+    is_valid_cidr "$subnet" || { error "Invalid subnet for NAT: $subnet"; return 1; }
+    [[ "$eth" =~ ^[a-zA-Z0-9_-]{1,15}$ ]] || { error "Invalid interface name: $eth"; return 1; }
+
     log "Настройка NAT в UFW для подсети $subnet через интерфейс $eth..."
 
-    # 1. Создаем резервную копию если ее еще нет
-    if [[ ! -f /etc/ufw/before.rules.orig ]]; then
-        cp /etc/ufw/before.rules /etc/ufw/before.rules.orig
-    fi
+    # 1. Резервная копия
+    [[ -f /etc/ufw/before.rules.orig ]] || cp /etc/ufw/before.rules /etc/ufw/before.rules.orig
 
-    # 2. Если блока NAT вообще нет в файле, добавляем его в самое начало (после комментариев)
+    # 2. Если блока NAT вообще нет, вставляем его ПЕРЕД *filter
     if ! grep -q "^\*nat" /etc/ufw/before.rules; then
-        log "Создание нового блока *nat в before.rules..."
-        local temp_file=$(mktemp)
-        cat > "$temp_file" <<EOF
+        log "Создание блока *nat..."
+        local temp_file
+        temp_file="$(mktemp -p /etc/ufw)" || { error "mktemp failed in /etc/ufw"; return 1; }
+        # Находим строку начала блока *filter
+        local filter_line
+        filter_line=$(grep -n "^\*filter" /etc/ufw/before.rules | head -n 1 | cut -d: -f1)
+        [[ -z "$filter_line" ]] && filter_line=1
+
+        # Собираем файл заново: до фильтра + наш нат + остальное
+        head -n $((filter_line - 1)) /etc/ufw/before.rules > "$temp_file"
+        cat >> "$temp_file" <<EOF
 *nat
 :POSTROUTING ACCEPT [0:0]
 COMMIT
 
 EOF
-        # Вставляем после первых комментариев (строки начинающиеся с #)
-        local first_non_comment=$(grep -n -v "^#" /etc/ufw/before.rules | head -n 1 | cut -d: -f1)
-        if [[ -z "$first_non_comment" ]]; then first_non_comment=1; fi
-        
-        sed "${first_non_comment}i $(cat $temp_file | sed ':a;N;$!ba;s/\n/\\n/g')" /etc/ufw/before.rules > "${temp_file}.final"
-        mv "${temp_file}.final" /etc/ufw/before.rules
-        rm -f "$temp_file"
+        tail -n +$filter_line /etc/ufw/before.rules >> "$temp_file"
+        mv "$temp_file" /etc/ufw/before.rules
     fi
 
-    # 3. Добавляем правило маскарадинга, если его еще нет
+    # 3. Добавляем правило маскарадинга
     local rule="-A POSTROUTING -s $subnet -o $eth -j MASQUERADE"
     if ! grep -Fq -- "$rule" /etc/ufw/before.rules; then
-        log "Добавление правила MASQUERADE для $subnet..."
-        # Вставляем ПЕРЕД COMMIT в блоке *nat
-        # Ищем строку COMMIT, которая идет после *nat
-        sed -i "/^\*nat/,/^COMMIT/ s/^COMMIT/$rule\nCOMMIT/" /etc/ufw/before.rules
+        log "Добавление правила MASQUERADE..."
+        # Escape special chars for sed replacement side (|, &, \)
+        local rule_escaped
+        rule_escaped=$(printf '%s' "$rule" | sed 's/[|&\\/]/\\&/g')
+        sed -i "/^\*nat/,/^COMMIT/ s|^COMMIT|${rule_escaped}\nCOMMIT|" /etc/ufw/before.rules
     fi
-    
+
     success "Конфигурация NAT обновлена."
 }
 
@@ -67,16 +74,14 @@ firewall_allow() {
 
 firewall_enable() {
     log "Включение и перезапуск фаервола..."
-    
-    # Проверка на наличие пустых строк или дублей COMMIT в блоке nat, которые могли возникнуть
-    # (чистка возможных артефактов предыдущих неудачных запусков)
-    
-    # Пытаемся применить
     if ! echo "y" | ufw enable; then
-        error "UFW не смог включиться. Проверьте /etc/ufw/before.rules."
-        warn "Пытаюсь восстановить оригинальный файл..."
-        cp /etc/ufw/before.rules.orig /etc/ufw/before.rules
-        echo "y" | ufw enable
+        error "Ошибка UFW. Откат..."
+        if [[ -f /etc/ufw/before.rules.orig ]]; then
+            cp /etc/ufw/before.rules.orig /etc/ufw/before.rules
+            echo "y" | ufw enable
+        else
+            error "Резервная копия /etc/ufw/before.rules.orig не найдена — требуется ручное вмешательство"
+        fi
         return 1
     fi
     ufw reload

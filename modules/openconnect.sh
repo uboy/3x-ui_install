@@ -101,7 +101,13 @@ EOF
     local oc_user="${VPN_USER:-vpnuser}"
     local oc_pass="${VPN_PASS}"
     touch /etc/ocserv/ocpasswd
-    (echo "$oc_pass"; echo "$oc_pass") | ocpasswd -c /etc/ocserv/ocpasswd "$oc_user"
+    # Use heredoc to avoid password appearing in ps aux / shell history
+    ocpasswd -c /etc/ocserv/ocpasswd "$oc_user" <<EOF
+${oc_pass}
+${oc_pass}
+EOF
+    unset oc_pass
+    chmod 600 /etc/ocserv/ocpasswd
     
     # 5. Сеть (NAT через UFW)
     firewall_configure_nat "192.168.10.0/24"

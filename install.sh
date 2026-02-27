@@ -30,6 +30,16 @@ on_exit() {
 }
 trap on_exit EXIT
 
+on_error() {
+  local rc=$? line=$1
+  error "Installation failed at line $line (exit code $rc)"
+  [[ -f /etc/ufw/before.rules.orig ]] && \
+    cp /etc/ufw/before.rules.orig /etc/ufw/before.rules
+  save_install_state
+  exit "$rc"
+}
+trap 'on_error ${LINENO}' ERR
+
 main() {
   # Инициализация
   DOMAIN=""
@@ -76,14 +86,21 @@ main() {
   USED_PORTS[51820]="AmneziaWG"
   USED_PORTS[2053]="3x-ui Panel"
   
-  # Если SSH_PORT изменен
+  # Если SSH_PORT изменен — проверяем конфликты
   if [[ "${SSH_PORT:-22}" != "22" ]]; then
       if [[ -n "${USED_PORTS[$SSH_PORT]:-}" ]]; then
           error "КОНФЛИКТ ПОРТОВ: Порт $SSH_PORT занят сервисом ${USED_PORTS[$SSH_PORT]}. Смените порт SSH!"
           exit 1
       fi
+      if ! check_port_free "$SSH_PORT"; then
+          error "Порт $SSH_PORT уже занят запущенным сервисом (проверено через ss)"
+          exit 1
+      fi
   fi
-  
+
+  # Проверка свободного места (минимум 5 ГБ)
+  check_disk_space 5
+
   module_base_install
   firewall_init
   

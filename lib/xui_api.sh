@@ -2,25 +2,38 @@
 
 # Библиотека для работы с API 3x-ui
 
-PANEL_COOKIE_FILE="/tmp/3xui-cookie.txt"
+PANEL_COOKIE_FILE=""
+_XUI_COOKIE_TRAP_SET=0
+
+_xui_cookie_init() {
+    PANEL_COOKIE_FILE="$(mktemp -p /root .3xui-cookie.XXXXXX)"
+    chmod 600 "$PANEL_COOKIE_FILE"
+    if (( _XUI_COOKIE_TRAP_SET == 0 )); then
+        trap '_xui_cookie_cleanup' EXIT
+        _XUI_COOKIE_TRAP_SET=1
+    fi
+}
+
+_xui_cookie_cleanup() {
+    [[ -n "${PANEL_COOKIE_FILE:-}" && -f "$PANEL_COOKIE_FILE" ]] && rm -f "$PANEL_COOKIE_FILE"
+}
 
 xui_api_login() {
     local username="$1"
     local password="$2"
     local origin="${3:-http://127.0.0.1:2053}"
     local base_path="${4:-/}"
-    
+
     log "Попытка входа в API 3x-ui (пользователь: $username)..."
-    
-    # Очистка куки
-    : > "$PANEL_COOKIE_FILE"
-    
+
+    _xui_cookie_init
+
     local response
-    response=$(curl -ksS --max-time 10 
-      -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" 
-      -H 'Content-Type: application/x-www-form-urlencoded' 
-      --data-urlencode "username=${username}" 
-      --data-urlencode "password=${password}" 
+    response=$(curl -sS --max-time 10 --noproxy '*' \
+      -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" \
+      -H 'Content-Type: application/x-www-form-urlencoded' \
+      --data-urlencode "username=${username}" \
+      --data-urlencode "password=${password}" \
       "${origin}${base_path}login" || true)
 
     if [[ "$response" == *'"success":true'* ]]; then
@@ -43,13 +56,13 @@ xui_api_update_user() {
     log "Обновление учетных данных панели..."
     
     local response
-    response=$(curl -ksS --max-time 10 
-      -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" 
-      -H 'Content-Type: application/x-www-form-urlencoded' 
-      --data-urlencode "oldUsername=${old_user}" 
-      --data-urlencode "oldPassword=${old_pass}" 
-      --data-urlencode "newUsername=${new_user}" 
-      --data-urlencode "newPassword=${new_pass}" 
+    response=$(curl -sS --max-time 10 --noproxy '*' \
+      -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" \
+      -H 'Content-Type: application/x-www-form-urlencoded' \
+      --data-urlencode "oldUsername=${old_user}" \
+      --data-urlencode "oldPassword=${old_pass}" \
+      --data-urlencode "newUsername=${new_user}" \
+      --data-urlencode "newPassword=${new_pass}" \
       "${origin}${base_path}panel/setting/updateUser" || true)
 
     [[ "$response" == *'"success":true'* ]]
@@ -67,17 +80,17 @@ xui_api_add_inbound() {
     log "Создание входящего подключения (inbound) $remark на порту $port..."
     
     local response
-    response=$(curl -ksS --max-time 12 
-      -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" 
-      -H 'Content-Type: application/x-www-form-urlencoded' 
-      --data-urlencode "remark=${remark}" 
-      --data-urlencode "port=${port}" 
-      --data-urlencode "protocol=${protocol}" 
-      --data-urlencode "settings=${settings}" 
-      --data-urlencode "streamSettings=${stream_settings}" 
-      --data-urlencode "enable=true" 
-      --data-urlencode "sniffing={"enabled":true,"destOverride":["http","tls","quic"]}" 
-      -X POST 
+    response=$(curl -sS --max-time 12 --noproxy '*' \
+      -c "$PANEL_COOKIE_FILE" -b "$PANEL_COOKIE_FILE" \
+      -H 'Content-Type: application/x-www-form-urlencoded' \
+      --data-urlencode "remark=${remark}" \
+      --data-urlencode "port=${port}" \
+      --data-urlencode "protocol=${protocol}" \
+      --data-urlencode "settings=${settings}" \
+      --data-urlencode "streamSettings=${stream_settings}" \
+      --data-urlencode "enable=true" \
+      --data-urlencode 'sniffing={"enabled":true,"destOverride":["http","tls","quic"]}' \
+      -X POST \
       "${origin}${base_path}panel/api/inbounds/add" || true)
 
     [[ "$response" == *'"success":true'* ]]

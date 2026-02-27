@@ -21,6 +21,55 @@ is_valid_ipv4() {
   done
 }
 
+is_valid_domain() {
+  local domain="$1"
+  # Accept bare IPv4 as a valid "domain"
+  if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    is_valid_ipv4 "$domain" && return 0
+    return 1
+  fi
+  [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$ ]]
+}
+
+is_valid_email() {
+  local email="$1"
+  [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]
+}
+
+is_valid_username() {
+  local user="$1"
+  [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+is_valid_cidr() {
+  local cidr="$1"
+  local ip prefix
+  [[ "$cidr" =~ ^([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/([0-9]+)$ ]] || return 1
+  ip="${BASH_REMATCH[1]}"
+  prefix="${BASH_REMATCH[2]}"
+  is_valid_ipv4 "$ip" || return 1
+  (( prefix >= 0 && prefix <= 32 ))
+}
+
+check_disk_space() {
+  local required_gb="${1:-1}"
+  local available_kb available_gb
+  available_kb=$(df /var --output=avail 2>/dev/null | tail -1 | tr -d ' ')
+  available_gb=$(( available_kb / 1024 / 1024 ))
+  if (( available_gb < required_gb )); then
+    error "Insufficient disk space: ${available_gb}GB available, ${required_gb}GB required in /var"
+    return 1
+  fi
+}
+
+check_port_free() {
+  local port="$1"
+  if ss -tuln 2>/dev/null | grep -qE ":${port}[[:space:]]"; then
+    return 1
+  fi
+  return 0
+}
+
 generate_random_fixed() {
   local length="${1:-}"
   local charset="${2:-}"

@@ -26,7 +26,11 @@ module_amnezia_install() {
 
     for img in "${images[@]}"; do
         log "Попытка использовать образ: $img..."
-        if docker pull "$img" && docker run --rm "$img" which awg >/dev/null 2>&1; then
+        # Skip pull if image is already cached locally
+        if ! docker image inspect "$img" >/dev/null 2>&1; then
+            docker pull "$img" || { warn "Не удалось загрузить образ $img"; continue; }
+        fi
+        if docker run --rm "$img" which awg >/dev/null 2>&1; then
             working_image="$img"
             success "Найден рабочий образ AmneziaWG: $img"
             break
@@ -40,8 +44,10 @@ module_amnezia_install() {
     fi
 
     log "Генерация ключей..."
-    local private_key=$(openssl rand -base64 32)
-    local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "awg" "$working_image" pubkey)
+    local private_key
+    private_key=$(docker run --rm --entrypoint "awg" "$working_image" genkey)
+    local public_key
+    public_key=$(printf '%s' "$private_key" | docker run --rm -i --entrypoint "awg" "$working_image" pubkey)
     
     log "Создание конфигурации..."
     cat > "${AMN_DIR}/amneziawg.conf" <<EOF
@@ -93,8 +99,10 @@ EOF
     fi
 
     log "Создание клиента..."
-    local client_private_key=$(openssl rand -base64 32)
-    local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "awg" "$working_image" pubkey)
+    local client_private_key
+    client_private_key=$(docker run --rm --entrypoint "awg" "$working_image" genkey)
+    local client_public_key
+    client_public_key=$(printf '%s' "$client_private_key" | docker run --rm -i --entrypoint "awg" "$working_image" pubkey)
     
     # Добавление пира через awg
     docker exec amneziawg awg set wg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
@@ -105,14 +113,14 @@ EOF
 PrivateKey = $client_private_key
 Address = 10.8.0.2/24
 DNS = 1.1.1.1
-J1 = $(grep J1 amneziawg.conf | cut -d' ' -f3)
-J2 = $(grep J2 amneziawg.conf | cut -d' ' -f3)
-S1 = $(grep S1 amneziawg.conf | cut -d' ' -f3)
-S2 = $(grep S2 amneziawg.conf | cut -d' ' -f3)
-H1 = $(grep H1 amneziawg.conf | cut -d' ' -f3)
-H2 = $(grep H2 amneziawg.conf | cut -d' ' -f3)
-H3 = $(grep H3 amneziawg.conf | cut -d' ' -f3)
-H4 = $(grep H4 amneziawg.conf | cut -d' ' -f3)
+J1 = $(grep "^J1" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
+J2 = $(grep "^J2" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
+S1 = $(grep "^S1" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
+S2 = $(grep "^S2" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
+H1 = $(grep "^H1" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
+H2 = $(grep "^H2" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
+H3 = $(grep "^H3" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
+H4 = $(grep "^H4" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
 
 [Peer]
 PublicKey = $public_key
