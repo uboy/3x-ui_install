@@ -20,26 +20,27 @@ module_openvpn_install() {
     log "Установка OpenVPN (Docker)..."
     mkdir -p "$OVPN_DIR"
     
-    # Генерируем конфиг с Google DNS
-    docker run -v "$OVPN_DIR:/etc/openvpn" --rm kylemanna/openvpn ovpn_genconfig -u "udp://$DOMAIN" -n 8.8.8.8 -n 8.8.4.4
+    # 1. Генерация конфига
+    # Добавляем принудительный пуш DNS и топологию
+    docker run -v "$OVPN_DIR:/etc/openvpn" --rm kylemanna/openvpn ovpn_genconfig -u "udp://$DOMAIN" -n 8.8.8.8 -n 1.1.1.1
     
-    # ДОБАВЛЯЕМ ИСКЛЮЧЕНИЯ В КОНФИГ
-    log "Настройка исключений маршрутизации для OpenVPN..."
+    # Тюнинг конфига сервера
+    log "Настройка параметров OpenVPN сервера..."
     {
-        echo "# Local networks exclusions"
+        echo "push \"dhcp-option DNS 8.8.8.8\""
+        echo "push \"dhcp-option DNS 1.1.1.1\""
+        echo "push \"block-outside-dns\""
+        
+        # Split Tunneling (Исключения локальных сетей)
         echo 'push "route 192.168.0.0 255.255.0.0 net_gateway"'
         echo 'push "route 10.0.0.0 255.0.0.0 net_gateway"'
         echo 'push "route 172.16.0.0 255.240.0.0 net_gateway"'
         
-        # Дополнительные маршруты от пользователя
         if [[ -n "${VPN_EXCLUDE_ROUTES:-}" ]]; then
             IFS=',' read -ra ADDR <<< "$VPN_EXCLUDE_ROUTES"
             for i in "${ADDR[@]}"; do
-                # Очистка пробелов и конвертация CIDR (базово для IP/32)
                 local ip=$(echo "$i" | xargs | cut -d'/' -f1)
-                local mask="255.255.255.255"
-                # Если введен CIDR, OpenVPN понимает формат: route IP MASK
-                echo "push \"route $ip $mask net_gateway\""
+                echo "push \"route $ip 255.255.255.255 net_gateway\""
             done
         fi
     } >> "$OVPN_DIR/openvpn.conf"
@@ -47,6 +48,7 @@ module_openvpn_install() {
     log "Генерация ключей PKI..."
     echo -e "\n\n\n\n\n\n\n\n" | docker run -v "$OVPN_DIR:/etc/openvpn" --rm -i kylemanna/openvpn ovpn_initpki nopass
 
+    # 2. Docker Compose
     cat > "${OVPN_DIR}/docker-compose.yml" <<EOF
 services:
   openvpn:
@@ -64,14 +66,11 @@ EOF
     cd "$OVPN_DIR"
     docker compose up -d
     
-    # NAT на хосте
-    local eth=$(ip route get 8.8.8.8 | grep -oP 'dev \K\S+' | head -n 1)
-    if [[ -n "$eth" ]]; then
-        iptables -t nat -A POSTROUTING -s 192.168.255.0/24 -o "$eth" -j MASQUERADE 2>/dev/null || true
-    fi
-
+    # 3. Настройка NAT в UFW (Подсеть OpenVPN по умолчанию 192.168.255.0/24)
+    firewall_configure_nat "192.168.255.0/24"
     firewall_allow 1194 udp
-    success "OpenVPN настроен с исключениями локальных сетей."
+    
+    success "OpenVPN установлен и NAT настроен."
 }
 
 module_openvpn_configure() {
@@ -86,6 +85,5 @@ module_openvpn_configure() {
     docker compose run --rm openvpn easyrsa build-client-full "$client_name" nopass
     docker compose run --rm openvpn ovpn_getclient "$client_name" > "$OVPN_DIR/${client_name}.ovpn"
     
-    # Исправляем DNS в клиентском конфиге если нужно
     success "Конфигурация клиента OpenVPN готова."
 }

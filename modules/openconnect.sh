@@ -103,15 +103,8 @@ EOF
     touch /etc/ocserv/ocpasswd
     (echo "$oc_pass"; echo "$oc_pass") | ocpasswd -c /etc/ocserv/ocpasswd "$oc_user"
     
-    # 5. Сеть (IP Forwarding и NAT)
-    echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-ocserv.conf
-    sysctl -p /etc/sysctl.d/99-ocserv.conf 2>/dev/null || true
-    
-    local eth=$(ip route get 8.8.8.8 | grep -oP 'dev \K\S+' | head -n 1)
-    if [[ -n "$eth" ]]; then
-        iptables -t nat -A POSTROUTING -s 192.168.10.0/24 -o "$eth" -j MASQUERADE 2>/dev/null || true
-    fi
-
+    # 5. Сеть (NAT через UFW)
+    firewall_configure_nat "192.168.10.0/24"
     firewall_allow 4443 tcp
     firewall_allow 4443 udp
     
