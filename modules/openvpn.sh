@@ -21,9 +21,13 @@ module_openvpn_install() {
     mkdir -p "$OVPN_DIR"
     
     # 1. Генерация конфига
-    # ovpn_genconfig уже добавляет: dhcp-option DNS, block-outside-dns, redirect-gateway def1
-    # НЕ дублируем их вручную — это вызовет конфликт маршрутов
-    docker run -v "$OVPN_DIR:/etc/openvpn" --rm kylemanna/openvpn ovpn_genconfig -u "udp://$DOMAIN" -n 8.8.8.8 -n 1.1.1.1
+    # ovpn_genconfig добавляет: dhcp-option DNS, redirect-gateway def1
+    # -e задаёт cipher + ncp-ciphers для совместимости с OpenVPN 2.5+ клиентами (2.4 по умолчанию BF-CBC)
+    docker run -v "$OVPN_DIR:/etc/openvpn" --rm kylemanna/openvpn ovpn_genconfig \
+        -u "udp://$DOMAIN" \
+        -n 8.8.8.8 -n 1.1.1.1 \
+        -e "cipher AES-256-GCM" \
+        -e "ncp-ciphers AES-256-GCM:AES-128-GCM"
 
     # Добавляем пользовательские исключения маршрутов (split-tunnel для кастомных сетей)
     # ВАЖНО: net_gateway маршруты работают только при полном туннеле (redirect-gateway def1)
@@ -63,6 +67,10 @@ services:
       - .:/etc/openvpn
     cap_add:
       - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
     restart: unless-stopped
 EOF
 
@@ -87,6 +95,8 @@ module_openvpn_configure() {
     cd "$OVPN_DIR"
     docker compose run --rm openvpn easyrsa build-client-full "$client_name" nopass
     docker compose run --rm openvpn ovpn_getclient "$client_name" > "$OVPN_DIR/${client_name}.ovpn"
-    
+    # Добавляем data-ciphers в client .ovpn для совместимости с OpenVPN 2.5+
+    echo "data-ciphers AES-256-GCM:AES-128-GCM:AES-256-CBC" >> "$OVPN_DIR/${client_name}.ovpn"
+
     success "Конфигурация клиента OpenVPN готова."
 }
