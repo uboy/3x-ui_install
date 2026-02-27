@@ -20,29 +20,37 @@ firewall_configure_nat() {
         return 1
     fi
 
+    # Проверка поддержки NAT в ядре
+    if ! iptables -t nat -L -n >/dev/null 2>&1; then
+        warn "Таблица NAT не поддерживается ядром. Интернет в VPN может не работать."
+        return 1
+    fi
+
     log "Настройка NAT в UFW для подсети $subnet через интерфейс $eth..."
 
-    # Добавляем правила NAT в начало /etc/ufw/before.rules, если их там еще нет
-    if ! grep -q "NAT Rules" /etc/ufw/before.rules; then
-        # Создаем временный файл с правилами NAT
-        cat > /tmp/ufw_nat <<EOF
-# NAT Rules
+    # 1. Удаляем старые ошибочные блоки Aegis если они есть
+    sed -i '/# START AEGIS NAT/,/# END AEGIS NAT/d' /etc/ufw/before.rules
+
+    # 2. Подготавливаем новый блок правил
+    local nat_rules=$(cat <<EOF
+# START AEGIS NAT
 *nat
 :POSTROUTING ACCEPT [0:0]
 -A POSTROUTING -s $subnet -o $eth -j MASQUERADE
 COMMIT
-
+# END AEGIS NAT
 EOF
-        # Склеиваем с существующим файлом
-        cat /tmp/ufw_nat /etc/ufw/before.rules > /etc/ufw/before.rules.tmp
-        mv /etc/ufw/before.rules.tmp /etc/ufw/before.rules
-        rm /tmp/ufw_nat
-    else
-        # Если блок NAT уже есть, просто добавляем новую подсеть, если ее нет
-        if ! grep -q "$subnet" /etc/ufw/before.rules; then
-            sed -i "/^COMMIT/i -A POSTROUTING -s $subnet -o $eth -j MASQUERADE" /etc/ufw/before.rules
-        fi
-    fi
+)
+
+    # 3. Вставляем правила в САМОЕ НАЧАЛО файла before.rules
+    # Это гарантирует, что NAT сработает до любых запрещающих правил
+    local temp_file=$(mktemp)
+    echo "$nat_rules" > "$temp_file"
+    cat /etc/ufw/before.rules >> "$temp_file"
+    cp "$temp_file" /etc/ufw/before.rules
+    rm -f "$temp_file"
+    
+    success "Правила NAT добавлены в /etc/ufw/before.rules"
 }
 
 firewall_allow() {
@@ -54,6 +62,11 @@ firewall_allow() {
 
 firewall_enable() {
     log "Включение и перезапуск фаервола..."
+    # Проверяем синтаксис перед перезапуском
+    if ! ufw status >/dev/null 2>&1; then
+        error "Ошибка конфигурации UFW. Откат изменений в before.rules..."
+        sed -i '/# START AEGIS NAT/,/# END AEGIS NAT/d' /etc/ufw/before.rules
+    fi
     echo "y" | ufw enable
     ufw reload
 }

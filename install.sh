@@ -36,6 +36,7 @@ main() {
   EMAIL=""
   VPN_USER="vpnuser"
   VPN_PASS=""
+  VPN_EXCLUDE_ROUTES=""
   INSTALL_XUI="false"
   INSTALL_OPENVPN="false"
   INSTALL_OPENCONNECT="false"
@@ -54,6 +55,7 @@ main() {
   resolve_var DOMAIN ""
   resolve_var EMAIL ""
   resolve_var VPN_USER "vpnuser"
+  resolve_var VPN_EXCLUDE_ROUTES ""
   resolve_var INSTALL_MODE "simple"
   resolve_var SSH_PORT "22"
 
