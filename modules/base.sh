@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 
 module_base_install() {
-  local packages=(adduser ca-certificates certbot curl fail2ban gnupg lsb-release openssl python3 sudo ufw)
+  local packages=(adduser ca-certificates certbot curl fail2ban gnupg lsb-release openssl python3 sudo ufw iptables)
   log "Установка базовых пакетов: ${packages[*]}"
   apt-get update -y
   apt-get install -y --no-install-recommends "${packages[@]}"
+
+  log "Включение IP Forwarding в ядре..."
+  echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-vpn-forward.conf
+  sysctl -p /etc/sysctl.d/99-vpn-forward.conf || true
 }
 
 module_base_check_os() {

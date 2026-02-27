@@ -3,6 +3,10 @@
 firewall_init() {
     log "Инициализация фаервола (UFW)..."
     apt-get install -y ufw
+    
+    # Разрешаем форвардинг трафика (нужно для VPN)
+    sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+    
     ufw default deny incoming
     ufw default allow outgoing
 }

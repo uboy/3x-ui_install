@@ -31,8 +31,7 @@ ui_select_components() {
     "Выберите компоненты для установки (Пробел - выбор, Enter - подтверждение):" 20 70 10 \
     "XUI" "3x-ui Panel (Xray/VLESS/Reality)" ON \
     "OpenVPN" "Классический OpenVPN сервер" OFF \
-    "OpenConnect" "Cisco AnyConnect совместимый VPN" OFF \
-    "Amnezia" "Amnezia VPN (с поддержкой AmneziaWG)" OFF 3>&1 1>&2 2>&3)
+    "OpenConnect" "Cisco AnyConnect совместимый VPN" OFF 3>&1 1>&2 2>&3)
 
     # Сбрасываем флаги
     INSTALL_XUI="false"
@@ -45,12 +44,11 @@ ui_select_components() {
             "\"XUI\"") INSTALL_XUI="true" ;;
             "\"OpenVPN\"") INSTALL_OPENVPN="true" ;;
             "\"OpenConnect\"") INSTALL_OPENCONNECT="true" ;;
-            "\"Amnezia\"") INSTALL_AMNEZIA="true" ;;
         esac
     done
 
     # Если ничего не выбрано - выходим
-    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_AMNEZIA" == "false" ]]; then
+    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" ]]; then
         whiptail --title "Ошибка" --msgbox "Ничего не выбрано. Установка отменена." 10 60
         exit 0
     fi
@@ -89,6 +87,9 @@ ui_ask_reinstall() {
 
 ui_final_report() {
     local report=""
+    local plain_report=""
+    
+    # Формируем отчет
     report="${BOLD}Aegis VPN Toolbox: Установка завершена успешно!${NC}\n"
     report="${report}==============================================\n\n"
     
@@ -129,18 +130,12 @@ ui_final_report() {
         report="${report}${YELLOW}--- OpenConnect (Пропущено) ---${NC}\n\n"
     fi
 
-    if [[ "$INSTALL_AMNEZIA" == "true" ]]; then
-        report="${report}${BLUE}${BOLD}--- Amnezia VPN (AmneziaWG) ---${NC}\n"
-        report="${report}Порт: 51820 (UDP)\n"
-        report="${report}Конфиг для клиента: /opt/amnezia/amnezia_client.conf\n"
-        report="${report}Примечание: Импортируйте этот файл в приложение Amnezia.\n\n"
-    elif [[ "$INSTALL_AMNEZIA" == "skipped" ]]; then
-        report="${report}${YELLOW}--- Amnezia VPN (Пропущено) ---${NC}\n\n"
-    fi
-
     report="${report}${GREEN}${BOLD}Все пароли сохранены в файле состояния: /root/.aegis-vpn.state${NC}\n"
 
-    whiptail --title "Aegis VPN Toolbox - Итоговый отчет" --msgbox "$(printf "$report")" 28 85
+    # Создаем чистую версию без ANSI кодов для whiptail
+    plain_report=$(printf "$report" | sed 's/\x1b\[[0-9;]*m//g')
+
+    whiptail --title "Aegis VPN Toolbox - Итоги" --msgbox "$plain_report" 28 85
     clear
     printf "$report"
 }
