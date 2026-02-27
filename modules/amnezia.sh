@@ -17,29 +17,24 @@ module_amnezia_install() {
         rm -rf "$AMN_DIR"
     fi
 
-    log "Установка AmneziaWG (Официальный образ GHCR)..."
+    log "Установка AmneziaWG (Community Stable Edition)..."
     mkdir -p "$AMN_DIR"
     
-    # Используем образ из GitHub Container Registry - он наиболее актуален
-    local image="ghcr.io/amnezia-vpn/amnezia-wg:master"
+    # Этот образ содержит пропатченные бинарники awg и awg-quick
+    local image="pantonis/amnezia-wg:latest"
     
     log "Скачивание образа $image..."
-    if ! docker pull "$image"; then
-        warn "Не удалось скачать $image. Пробуем альтернативный..."
-        image="amneziavpn/amnezia-wg:latest"
-        docker pull "$image"
-    fi
-
-    log "Проверка наличия awg в образе..."
-    if ! docker run --rm "$image" which awg >/dev/null 2>&1; then
-        error "Бинарный файл 'awg' не найден в образе $image. Этот образ не поддерживает Amnezia."
-        return 1
-    fi
+    docker pull "$image"
 
     log "Генерация ключей..."
     local private_key=$(openssl rand -base64 32)
     local public_key=$(echo "$private_key" | docker run --rm -i --entrypoint "awg" "$image" pubkey)
     
+    if [[ -z "$public_key" ]]; then
+        error "Не удалось сгенерировать ключи через образ $image."
+        return 1
+    fi
+
     log "Создание конфигурации..."
     cat > "${AMN_DIR}/amneziawg.conf" <<EOF
 [Interface]
@@ -55,6 +50,7 @@ H2 = $(shuf -i 10000000-99999999 -n 1)
 H3 = $(shuf -i 10000000-99999999 -n 1)
 H4 = $(shuf -i 10000000-99999999 -n 1)
 EOF
+    chmod 600 "${AMN_DIR}/amneziawg.conf"
 
     # Docker Compose
     cat > "${AMN_DIR}/docker-compose.yml" <<EOF
@@ -65,12 +61,11 @@ services:
     privileged: true
     cap_add:
       - NET_ADMIN
+      - SYS_MODULE
     volumes:
-      - ./amneziawg.conf:/etc/amnezia/awg0.conf
-    # Запуск через awg-quick
-    entrypoint: awg-quick up /etc/amnezia/awg0.conf
-    # Чтобы контейнер не выходил, awg-quick должен держать его или используем tail
-    command: sh -c "awg-quick up /etc/amnezia/awg0.conf && tail -f /dev/null"
+      - ./amneziawg.conf:/etc/wireguard/wg0.conf
+    # В этом образе мы используем awg-quick
+    command: awg-quick up wg0
     ports:
       - "51820:51820/udp"
     restart: unless-stopped
@@ -93,7 +88,8 @@ EOF
     local client_private_key=$(openssl rand -base64 32)
     local client_public_key=$(echo "$client_private_key" | docker run --rm -i --entrypoint "awg" "$image" pubkey)
     
-    docker exec amneziawg awg set awg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
+    # Регистрация пира
+    docker exec amneziawg awg set wg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
     
     log "Генерация amnezia_client.conf..."
     cat > "${AMN_DIR}/amnezia_client.conf" <<EOF
