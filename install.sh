@@ -70,8 +70,13 @@ main() {
   resolve_var INSTALL_MODE "simple"
   resolve_var SSH_PORT "22"
 
+  if ! command -v whiptail &>/dev/null; then
+    log "Установка whiptail (интерактивный интерфейс)..."
+    apt-get install -y --no-install-recommends whiptail >/dev/null 2>&1
+  fi
+
   ui_banner
-  
+
   log "Шаг 2: Сбор интерактивной информации..."
   ui_select_components
   ui_get_basic_info
