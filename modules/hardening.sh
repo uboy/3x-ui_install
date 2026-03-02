@@ -29,7 +29,7 @@ EOF
 
         if ! id -u "$admin_user" >/dev/null 2>&1; then
             log "Создание администратора системы: $admin_user..."
-            useradd -m -s /bin/bash "$admin_user"
+            adduser --disabled-password --gecos "" "$admin_user"
             local admin_pass="${NEW_PASS:-$(generate_strong_secret)}"
             echo "$admin_user:$admin_pass" | chpasswd
             usermod -aG sudo "$admin_user"

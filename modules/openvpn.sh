@@ -104,6 +104,8 @@ EOF
         log "Копия .ovpn: /home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
     fi
 
+    # Настройка сети (NAT через UFW)
+    firewall_configure_nat "10.8.0.0/24"
     firewall_allow "${ovpn_port}" udp
     success "OpenVPN (DockOVPN) установлен и запущен на порту ${ovpn_port}/UDP."
 
