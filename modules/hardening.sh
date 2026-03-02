@@ -45,6 +45,7 @@ EOF
         } > "$sudoers_file"
         chmod 440 "$sudoers_file"
         visudo -c -f "$sudoers_file" || { rm -f "$sudoers_file"; die "sudoers syntax error — file removed"; }
+        warn "ВНИМАНИЕ: docker в sudo без пароля = фактически полный root. Рассмотрите удаление после настройки."
         success "Пользователь $admin_user создан и добавлен в sudoers."
 
         # 3. Харденинг SSH

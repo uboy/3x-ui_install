@@ -68,6 +68,7 @@ EOF
 firewall_allow() {
     local port="$1"
     local proto="${2:-tcp}"
+    is_valid_port "$port" || { error "Invalid port: $port"; return 1; }
     log "Открытие порта $port/$proto..."
     ufw allow "$port/$proto"
 }

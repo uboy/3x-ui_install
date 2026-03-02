@@ -53,11 +53,14 @@ is_valid_cidr() {
 
 check_disk_space() {
   local required_gb="${1:-1}"
-  local available_kb available_gb
-  available_kb=$(df /var --output=avail 2>/dev/null | tail -1 | tr -d ' ')
+  local available_kb available_gb check_path
+  # Prefer /opt if it is on a separate mount, otherwise fall back to /
+  check_path="/"
+  [[ -d /opt ]] && check_path="/opt"
+  available_kb=$(df "$check_path" --output=avail 2>/dev/null | tail -1 | tr -d ' ')
   available_gb=$(( available_kb / 1024 / 1024 ))
   if (( available_gb < required_gb )); then
-    error "Insufficient disk space: ${available_gb}GB available, ${required_gb}GB required in /var"
+    error "Insufficient disk space: ${available_gb}GB available, ${required_gb}GB required on ${check_path}"
     return 1
   fi
 }

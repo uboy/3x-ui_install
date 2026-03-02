@@ -1,28 +1,19 @@
 #!/usr/bin/env bash
 
 # Библиотека для работы с whiptail (стандартное меню в Ubuntu)
-
-# ANSI colors for UI
-BOLD='\033[1m'
-UNDERLINE='\033[4m'
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# ANSI constants are defined in common.sh (sourced before this file)
 
 ui_banner() {
     clear
     cat << "EOF"
     ___              _      _   __ ____  _   __
    /   | ___  ____ _(_)____| | / // __ \/ | / /
-  / /| |/ _ \/ __ `/ / ___/| |/ // /_/ /  |/ / 
- / ___ /  __/ /_/ / (__  ) |  // ____/ /|  /  
-/_/  |_\___/\__, /_/____/  |_//_/   /_/ |_/   
+  / /| |/ _ \/ __ `/ / ___/| |/ // /_/ /  |/ /
+ / ___ /  __/ /_/ / (__  ) |  // ____/ /|  /
+/_/  |_\___/\__, /_/____/  |_//_/   /_/ |_/
            /____/     VPN TOOLBOX
 EOF
     printf "${BLUE}${BOLD}      --- Aegis VPN Toolbox ---${NC}\n"
-    sleep 1
 }
 
 ui_select_components() {
@@ -31,7 +22,8 @@ ui_select_components() {
     "Выберите компоненты для установки (Пробел - выбор, Enter - подтверждение):" 20 70 10 \
     "XUI" "3x-ui Panel (Xray/VLESS/Reality)" ON \
     "OpenVPN" "Классический OpenVPN сервер" OFF \
-    "OpenConnect" "Cisco AnyConnect совместимый VPN" OFF 3>&1 1>&2 2>&3)
+    "OpenConnect" "Cisco AnyConnect совместимый VPN" OFF \
+    "AmneziaWG" "AmneziaWG (обфусцированный WireGuard)" OFF 3>&1 1>&2 2>&3) || exit 0
 
     # Сбрасываем флаги
     INSTALL_XUI="false"
@@ -44,11 +36,12 @@ ui_select_components() {
             "\"XUI\"") INSTALL_XUI="true" ;;
             "\"OpenVPN\"") INSTALL_OPENVPN="true" ;;
             "\"OpenConnect\"") INSTALL_OPENCONNECT="true" ;;
+            "\"AmneziaWG\"") INSTALL_AMNEZIA="true" ;;
         esac
     done
 
     # Если ничего не выбрано - выходим
-    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" ]]; then
+    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_AMNEZIA" == "false" ]]; then
         whiptail --title "Ошибка" --msgbox "Ничего не выбрано. Установка отменена." 10 60
         exit 0
     fi
@@ -57,7 +50,7 @@ ui_select_components() {
 ui_get_basic_info() {
     # DOMAIN — loop until valid
     while true; do
-        DOMAIN=$(whiptail --title "Настройка Aegis" --inputbox "Введите домен или IP адрес сервера:" 10 60 "${DOMAIN:-}" 3>&1 1>&2 2>&3)
+        DOMAIN=$(whiptail --title "Настройка Aegis" --inputbox "Введите домен или IP адрес сервера:" 10 60 "${DOMAIN:-}" 3>&1 1>&2 2>&3) || exit 0
         if is_valid_domain "$DOMAIN"; then
             break
         fi
@@ -67,7 +60,7 @@ ui_get_basic_info() {
     # EMAIL — required only for XUI or OpenConnect (Let's Encrypt)
     if [[ "${INSTALL_XUI:-false}" == "true" || "${INSTALL_OPENCONNECT:-false}" == "true" ]]; then
         while true; do
-            EMAIL=$(whiptail --title "Настройка Email" --inputbox "Введите Email для Let's Encrypt:" 10 60 "${EMAIL:-}" 3>&1 1>&2 2>&3)
+            EMAIL=$(whiptail --title "Настройка Email" --inputbox "Введите Email для Let's Encrypt:" 10 60 "${EMAIL:-}" 3>&1 1>&2 2>&3) || exit 0
             if is_valid_email "$EMAIL"; then
                 break
             fi
@@ -77,7 +70,7 @@ ui_get_basic_info() {
 
     # VPN_USER — loop until valid
     while true; do
-        VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect/OpenVPN):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3)
+        VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect/OpenVPN):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3) || exit 0
         if is_valid_username "$VPN_USER"; then
             break
         fi
@@ -86,7 +79,7 @@ ui_get_basic_info() {
 
     # VPN_PASS — enforce minimum 12 chars if entered manually
     while true; do
-        VPN_PASS=$(whiptail --title "VPN Пароль" --passwordbox "Введите пароль для VPN (оставьте пустым для автогенерации, мин. 12 символов):" 10 60 3>&1 1>&2 2>&3)
+        VPN_PASS=$(whiptail --title "VPN Пароль" --passwordbox "Введите пароль для VPN (оставьте пустым для автогенерации, мин. 12 символов):" 10 60 3>&1 1>&2 2>&3) || exit 0
         if [[ -z "${VPN_PASS:-}" ]]; then
             VPN_PASS=$(generate_strong_secret)
             break
@@ -98,7 +91,7 @@ ui_get_basic_info() {
 
     # VPN_EXCLUDE_ROUTES — validate each CIDR token
     while true; do
-        VPN_EXCLUDE_ROUTES=$(whiptail --title "Исключения маршрутов" --inputbox "Введите через запятую сети для исключения из VPN (напр. 1.1.1.1/32, 10.0.0.0/8). По умолчанию 192.168.0.0/16 уже исключена." 12 60 "${VPN_EXCLUDE_ROUTES:-}" 3>&1 1>&2 2>&3)
+        VPN_EXCLUDE_ROUTES=$(whiptail --title "Исключения маршрутов" --inputbox "Введите через запятую сети для исключения из VPN (напр. 1.1.1.1/32, 10.0.0.0/8). По умолчанию 192.168.0.0/16 уже исключена." 12 60 "${VPN_EXCLUDE_ROUTES:-}" 3>&1 1>&2 2>&3) || exit 0
         if [[ -z "${VPN_EXCLUDE_ROUTES:-}" ]]; then
             break
         fi
@@ -141,11 +134,11 @@ ui_ask_reinstall() {
 ui_final_report() {
     local report=""
     local plain_report=""
-    
+
     # Формируем отчет
     report="${BOLD}Aegis VPN Toolbox: Установка завершена успешно!${NC}\n"
     report="${report}==============================================\n\n"
-    
+
     report="${report}${BLUE}${BOLD}--- ОБЩИЕ ДАННЫЕ СЕРВЕРА ---${NC}\n"
     report="${report}Домен/IP: ${DOMAIN}\n"
     if [[ "${INSTALL_MODE:-}" == "super-secure" ]]; then
@@ -169,7 +162,11 @@ ui_final_report() {
         report="${report}${BLUE}${BOLD}--- OpenVPN ---${NC}\n"
         report="${report}Протокол/Порт: UDP / 1194\n"
         report="${report}Пользователь: ${VPN_USER:-vpnuser}\n"
-        report="${report}Файл конфигурации (.ovpn): /opt/openvpn/${VPN_USER:-vpnuser}.ovpn\n\n"
+        report="${report}Файл конфигурации (.ovpn): /etc/openvpn/${VPN_USER:-vpnuser}.ovpn\n"
+        if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
+            report="${report}Доступная копия (SSH): /home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn\n"
+        fi
+        report="${report}\n"
     elif [[ "$INSTALL_OPENVPN" == "skipped" ]]; then
         report="${report}${YELLOW}--- OpenVPN (Пропущено) ---${NC}\n\n"
     fi
@@ -183,12 +180,24 @@ ui_final_report() {
         report="${report}${YELLOW}--- OpenConnect (Пропущено) ---${NC}\n\n"
     fi
 
+    if [[ "$INSTALL_AMNEZIA" == "true" ]]; then
+        report="${report}${BLUE}${BOLD}--- AmneziaWG ---${NC}\n"
+        report="${report}Endpoint: ${DOMAIN}:51820/udp\n"
+        report="${report}Конфиг клиента: /opt/amnezia/amnezia_client.conf\n"
+        if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
+            report="${report}Копия (SSH): /home/${NEW_USER}/amnezia_client.conf\n"
+        fi
+        report="${report}\n"
+    elif [[ "$INSTALL_AMNEZIA" == "skipped" ]]; then
+        report="${report}${YELLOW}--- AmneziaWG (Пропущено) ---${NC}\n\n"
+    fi
+
     report="${report}${GREEN}${BOLD}Все пароли сохранены в файле состояния: /root/.aegis-vpn.state${NC}\n"
 
     # Создаем чистую версию без ANSI кодов для whiptail
-    plain_report=$(printf "$report" | sed 's/\x1b\[[0-9;]*m//g')
+    plain_report=$(printf '%s' "$report" | sed 's/\x1b\[[0-9;]*m//g')
 
     whiptail --title "Aegis VPN Toolbox - Итоги" --msgbox "$plain_report" 28 85
     clear
-    printf "$report"
+    printf '%s' "$report"
 }

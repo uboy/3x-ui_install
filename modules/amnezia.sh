@@ -2,8 +2,13 @@
 
 module_amnezia_install() {
     [[ "$INSTALL_AMNEZIA" == "true" ]] || return 0
-    
+
     AMN_DIR="/opt/amnezia"
+
+    # Проверка наличия модуля ядра wireguard
+    if ! modprobe wireguard 2>/dev/null && ! lsmod | grep -q wireguard; then
+        warn "Модуль wireguard не обнаружен. AmneziaWG может не запуститься."
+    fi
 
     # Очистка
     if docker ps -a --format '{{.Names}}' | grep -q "^amneziawg$"; then
@@ -89,10 +94,13 @@ EOF
     cd "$AMN_DIR"
     docker compose up -d
     
-    log "Ожидание инициализации (10 сек)..."
-    sleep 10
-
-    if ! docker ps --format '{{.Names}} {{.Status}}' | grep "amneziawg" | grep -q "Up"; then
+    log "Ожидание запуска контейнера AmneziaWG..."
+    local _amn_attempts=0
+    until docker ps --format '{{.Names}} {{.Status}}' | grep "amneziawg" | grep -q "Up" \
+          || (( ++_amn_attempts >= 15 )); do
+        sleep 2
+    done
+    if (( _amn_attempts >= 15 )); then
         error "Контейнер упал. Логи:"
         docker logs amneziawg
         return 1
@@ -127,6 +135,20 @@ PublicKey = $public_key
 Endpoint = $DOMAIN:51820
 AllowedIPs = 0.0.0.0/0
 EOF
+
+    chmod 600 "${AMN_DIR}/amnezia_client.conf"
+
+    # Копируем конфиг в домашнюю директорию администратора для удобного получения по SSH
+    if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
+        cp "${AMN_DIR}/amnezia_client.conf" "/home/${NEW_USER}/amnezia_client.conf"
+        chown "${NEW_USER}:${NEW_USER}" "/home/${NEW_USER}/amnezia_client.conf"
+        chmod 600 "/home/${NEW_USER}/amnezia_client.conf"
+    fi
+
+    echo ""
+    echo "====== amnezia_client.conf (base64) ======"
+    base64 "${AMN_DIR}/amnezia_client.conf"
+    echo "==========================================="
 
     firewall_allow 51820 udp
     success "AmneziaWG успешно настроен на базе образа ${working_image}."

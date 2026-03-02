@@ -60,8 +60,8 @@ set_var EASYRSA_BATCH      1
 VARSEOF
 
     log "Инициализация PKI..."
-    export EASYRSA_BATCH=1
     (
+        export EASYRSA_BATCH=1
         cd "$OVPN_PKI"
         ./easyrsa init-pki
         ./easyrsa build-ca nopass
@@ -210,5 +210,22 @@ EOF
 
     chmod 600 "$ovpn_out"
 
+    # Copy to admin user's home dir for easy SSH retrieval
+    if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
+        cp "$ovpn_out" "/home/${NEW_USER}/${client_name}.ovpn"
+        chown "${NEW_USER}:${NEW_USER}" "/home/${NEW_USER}/${client_name}.ovpn"
+        chmod 600 "/home/${NEW_USER}/${client_name}.ovpn"
+        log "Копия конфига доступна пользователю ${NEW_USER}: ~/home/${NEW_USER}/${client_name}.ovpn"
+    fi
+
+    # Print base64 to terminal so it can be retrieved from SSH session history
     success "Конфигурация клиента OpenVPN готова: ${ovpn_out}"
+    echo ""
+    echo "====== .ovpn (base64) — скопируйте всё между линиями ======"
+    base64 "$ovpn_out"
+    echo "============================================================"
+    echo "Декодирование на Windows (PowerShell):"
+    echo "  \$b64 = '<вставьте base64 одной строкой>'"
+    echo "  [System.Convert]::FromBase64String(\$b64) | Set-Content -Path vpnuser.ovpn -Encoding Byte"
+    echo ""
 }

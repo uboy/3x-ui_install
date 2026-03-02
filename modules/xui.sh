@@ -16,7 +16,8 @@ module_xui_install() {
             return 0
         fi
         log "Очистка старой установки 3x-ui..."
-        cd "$PANEL_DIR" && docker compose down -v 2>/dev/null || true
+        [[ -n "${PANEL_DIR:-}" ]] || { error "PANEL_DIR не задан"; return 1; }
+        ( cd "$PANEL_DIR" && docker compose down -v 2>/dev/null ) || true
         rm -rf "$PANEL_DIR"
     fi
 
@@ -46,8 +47,7 @@ services:
     network_mode: host
 EOF
 
-    cd "$PANEL_DIR"
-    docker compose up -d
+    ( cd "$PANEL_DIR" && docker compose up -d )
 
     log "Ожидание готовности панели..."
     local attempts=0
@@ -80,14 +80,26 @@ module_xui_configure() {
         log "Создание автоматического VLESS Reality инбаунда..."
         local client_id
         client_id=$(generate_uuid)
+
+        # Generate valid X25519 key pair for VLESS Reality via xray binary in container
+        local x25519_out pk sid
+        x25519_out=$(docker exec 3x-ui xray x25519 2>/dev/null) || x25519_out=""
+        if [[ -n "$x25519_out" ]]; then
+            pk=$(printf '%s' "$x25519_out" | awk '/Private key:/{print $NF}')
+        else
+            warn "xray x25519 недоступен, используем случайный ключ (Reality может не работать)"
+            pk=$(generate_random_fixed 43 'a-zA-Z0-9_-' false)
+        fi
+        sid=$(generate_random_fixed 8 '0-9a-f' true)
+
         local settings stream_settings
         settings=$(jq -cn \
             --arg id "$client_id" \
             --arg email "${VPN_USER:-vpn}@${DOMAIN}" \
             '{clients:[{id:$id,email:$email,totalGB:0,expiryTime:0,enable:true}]}')
         stream_settings=$(jq -cn \
-            --arg pk "$(generate_random_fixed 32 'a-zA-Z0-9' false)" \
-            --arg sid "$(generate_random_fixed 8 '0-9a-f' true)" \
+            --arg pk "$pk" \
+            --arg sid "$sid" \
             '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"google.com:443",serverNames:["google.com"],privateKey:$pk,shortIds:[$sid]}}')
 
         if xui_api_add_inbound "Aegis_VLESS_Reality" "443" "vless" "$settings" "$stream_settings" "$panel_url"; then

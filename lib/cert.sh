@@ -38,12 +38,23 @@ cert_issue_standalone() {
     fi
 
     # Останавливаем временно службы на 80 порту если есть
-    if command -v nginx >/dev/null 2>&1; then systemctl stop nginx; fi
+    local _nginx_was_running=false
+    if command -v nginx >/dev/null 2>&1 && systemctl is-active --quiet nginx 2>/dev/null; then
+        _nginx_was_running=true
+        systemctl stop nginx
+    fi
 
     # Запуск certbot
-    if certbot certonly --standalone \
+    local _certbot_rc=0
+    certbot certonly --standalone \
         --non-interactive --agree-tos --email "$email" \
-        -d "$domain"; then
+        -d "$domain" || _certbot_rc=$?
+
+    if [[ "$_nginx_was_running" == true ]]; then
+        systemctl start nginx || warn "nginx не удалось перезапустить"
+    fi
+
+    if (( _certbot_rc == 0 )); then
         success "Сертификат для $domain успешно получен."
         return 0
     else

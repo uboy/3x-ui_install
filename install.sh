@@ -32,6 +32,7 @@ trap on_exit EXIT
 
 on_error() {
   local rc=$? line=$1
+  trap - ERR EXIT
   error "Installation failed at line $line (exit code $rc)"
   [[ -f /etc/ufw/before.rules.orig ]] && \
     cp /etc/ufw/before.rules.orig /etc/ufw/before.rules

@@ -83,7 +83,7 @@ EOF
     if [[ -n "${VPN_EXCLUDE_ROUTES:-}" ]]; then
         IFS=',' read -ra ADDR <<< "$VPN_EXCLUDE_ROUTES"
         for i in "${ADDR[@]}"; do
-            echo "no-route = $(echo "$i" | xargs)" >> /etc/ocserv/ocserv.conf
+            echo "no-route = ${i// /}" >> /etc/ocserv/ocserv.conf
         done
     fi
 
