@@ -114,6 +114,55 @@ ui_get_basic_info() {
     save_install_state
 }
 
+ui_get_hardening_info() {
+    if whiptail --title "Харденинг системы" --yesno \
+        "Включить усиленную защиту сервера?\n\n  • Создание нового sudo-пользователя\n  • Запрет SSH-логина под root\n  • Смена порта SSH\n\nРекомендуется для production-серверов." \
+        15 70; then
+        INSTALL_MODE="super-secure"
+    else
+        INSTALL_MODE="simple"
+        return 0
+    fi
+
+    # Новый администратор
+    while true; do
+        NEW_USER=$(whiptail --title "Новый sudo-пользователь" \
+            --inputbox "Имя нового администратора:" \
+            10 60 "${NEW_USER:-vpnadmin}" 3>&1 1>&2 2>&3) || exit 0
+        if is_valid_username "$NEW_USER"; then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox \
+            "Некорректное имя: '${NEW_USER}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." \
+            12 60
+    done
+
+    # Пароль администратора
+    while true; do
+        NEW_PASS=$(whiptail --title "Пароль администратора" \
+            --passwordbox "Пароль для ${NEW_USER} (мин. 12 символов, пусто = автогенерация):" \
+            10 60 3>&1 1>&2 2>&3) || exit 0
+        if [[ -z "${NEW_PASS:-}" ]]; then
+            NEW_PASS=$(generate_strong_secret)
+            break
+        elif (( ${#NEW_PASS} >= 12 )); then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox "Пароль слишком короткий. Минимум 12 символов." 10 60
+    done
+
+    # Порт SSH
+    while true; do
+        SSH_PORT=$(whiptail --title "Порт SSH" \
+            --inputbox "Новый порт SSH (1-65535, текущий: ${SSH_PORT:-22}):" \
+            10 60 "${SSH_PORT:-22}" 3>&1 1>&2 2>&3) || exit 0
+        if [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT >= 1 && SSH_PORT <= 65535 )); then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox "Некорректный порт: '${SSH_PORT}'. Диапазон: 1-65535." 10 60
+    done
+}
+
 ui_confirm_install() {
     if whiptail --title "Aegis VPN Toolbox" --yesno "Начать установку выбранных компонентов?" 10 60; then
         return 0
@@ -199,5 +248,5 @@ ui_final_report() {
 
     whiptail --title "Aegis VPN Toolbox - Итоги" --msgbox "$plain_report" 28 85
     clear
-    printf '%s' "$report"
+    printf '%b' "$report"
 }

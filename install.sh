@@ -80,6 +80,7 @@ main() {
   log "Шаг 2: Сбор интерактивной информации..."
   ui_select_components
   ui_get_basic_info
+  ui_get_hardening_info
   
   log "Шаг 3: Подтверждение и начало установки..."
   ui_confirm_install
