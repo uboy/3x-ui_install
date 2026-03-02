@@ -6,9 +6,6 @@ module_openvpn_install() {
     local ovpn_dir="/opt/dockovpn"
     local data_dir="/root/dockovpn_data"
     local ovpn_port="${PORT_OPENVPN:-1194}"
-    # HTTP port for first-run .ovpn download (active 60 sec after container start)
-    # Bound to 127.0.0.1 only — not exposed to the internet
-    local http_port="8088"
 
     # ── Detect existing installation ────────────────────────────────────────
     local _existing=false
