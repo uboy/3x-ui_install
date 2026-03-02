@@ -115,51 +115,74 @@ ui_get_basic_info() {
 }
 
 ui_get_hardening_info() {
-    if whiptail --title "Харденинг системы" --yesno \
-        "Включить усиленную защиту сервера?\n\n  • Создание нового sudo-пользователя\n  • Запрет SSH-логина под root\n  • Смена порта SSH\n\nРекомендуется для production-серверов." \
-        15 70; then
+    # Outer loop: cancel on any sub-dialog brings back to the yes/no question
+    while true; do
+        if ! whiptail --title "Харденинг системы" --yesno \
+            "Включить усиленную защиту сервера?\n\n  • Создание нового sudo-пользователя\n  • Запрет SSH-логина под root\n  • Смена порта SSH\n\nРекомендуется для production-серверов." \
+            15 70; then
+            INSTALL_MODE="simple"
+            return 0
+        fi
         INSTALL_MODE="super-secure"
-    else
-        INSTALL_MODE="simple"
+
+        # --- Новый администратор ---
+        local _user _user_ok=false
+        while true; do
+            if ! _user=$(whiptail --title "Новый sudo-пользователь" \
+                --inputbox "Имя нового администратора:" \
+                10 60 "${NEW_USER:-vpnadmin}" 3>&1 1>&2 2>&3); then
+                break  # Cancel → back to yes/no
+            fi
+            if is_valid_username "$_user"; then
+                NEW_USER="$_user"
+                _user_ok=true
+                break
+            fi
+            whiptail --title "Ошибка" --msgbox \
+                "Некорректное имя: '${_user}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." \
+                12 60
+        done
+        [[ "$_user_ok" == "true" ]] || continue
+
+        # --- Пароль администратора ---
+        local _pass _pass_ok=false
+        while true; do
+            if ! _pass=$(whiptail --title "Пароль администратора" \
+                --passwordbox "Пароль для ${NEW_USER} (мин. 12 символов, пусто = автогенерация):" \
+                10 60 3>&1 1>&2 2>&3); then
+                break  # Cancel → back to yes/no
+            fi
+            if [[ -z "${_pass:-}" ]]; then
+                NEW_PASS=$(generate_strong_secret)
+                _pass_ok=true
+                break
+            elif (( ${#_pass} >= 12 )); then
+                NEW_PASS="$_pass"
+                _pass_ok=true
+                break
+            fi
+            whiptail --title "Ошибка" --msgbox "Пароль слишком короткий. Минимум 12 символов." 10 60
+        done
+        [[ "$_pass_ok" == "true" ]] || continue
+
+        # --- Порт SSH ---
+        local _port _port_ok=false
+        while true; do
+            if ! _port=$(whiptail --title "Порт SSH" \
+                --inputbox "Новый порт SSH (1-65535, текущий: ${SSH_PORT:-22}):" \
+                10 60 "${SSH_PORT:-22}" 3>&1 1>&2 2>&3); then
+                break  # Cancel → back to yes/no
+            fi
+            if [[ "$_port" =~ ^[0-9]+$ ]] && (( _port >= 1 && _port <= 65535 )); then
+                SSH_PORT="$_port"
+                _port_ok=true
+                break
+            fi
+            whiptail --title "Ошибка" --msgbox "Некорректный порт: '${_port}'. Диапазон: 1-65535." 10 60
+        done
+        [[ "$_port_ok" == "true" ]] || continue
+
         return 0
-    fi
-
-    # Новый администратор
-    while true; do
-        NEW_USER=$(whiptail --title "Новый sudo-пользователь" \
-            --inputbox "Имя нового администратора:" \
-            10 60 "${NEW_USER:-vpnadmin}" 3>&1 1>&2 2>&3) || exit 0
-        if is_valid_username "$NEW_USER"; then
-            break
-        fi
-        whiptail --title "Ошибка" --msgbox \
-            "Некорректное имя: '${NEW_USER}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." \
-            12 60
-    done
-
-    # Пароль администратора
-    while true; do
-        NEW_PASS=$(whiptail --title "Пароль администратора" \
-            --passwordbox "Пароль для ${NEW_USER} (мин. 12 символов, пусто = автогенерация):" \
-            10 60 3>&1 1>&2 2>&3) || exit 0
-        if [[ -z "${NEW_PASS:-}" ]]; then
-            NEW_PASS=$(generate_strong_secret)
-            break
-        elif (( ${#NEW_PASS} >= 12 )); then
-            break
-        fi
-        whiptail --title "Ошибка" --msgbox "Пароль слишком короткий. Минимум 12 символов." 10 60
-    done
-
-    # Порт SSH
-    while true; do
-        SSH_PORT=$(whiptail --title "Порт SSH" \
-            --inputbox "Новый порт SSH (1-65535, текущий: ${SSH_PORT:-22}):" \
-            10 60 "${SSH_PORT:-22}" 3>&1 1>&2 2>&3) || exit 0
-        if [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT >= 1 && SSH_PORT <= 65535 )); then
-            break
-        fi
-        whiptail --title "Ошибка" --msgbox "Некорректный порт: '${SSH_PORT}'. Диапазон: 1-65535." 10 60
     done
 }
 
