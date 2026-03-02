@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
-# Color codes
-BOLD='\033[1m'
-UNDERLINE='\033[4m'
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Color codes — $'...' gives the real ESC byte (0x1b), not the 4-char literal \033
+BOLD=$'\033[1m'
+UNDERLINE=$'\033[4m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+BLUE=$'\033[0;34m'
+NC=$'\033[0m' # No Color
 
 log() { printf "[%s] ${BLUE}INFO${NC}  %s
 " "$(date '+%F %T')" "$*"; }
