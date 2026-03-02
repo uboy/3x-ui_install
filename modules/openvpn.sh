@@ -72,8 +72,8 @@ EOF
     local ovpn_out="/etc/openvpn/${VPN_USER:-vpnuser}.ovpn"
     local attempts=0
     local downloaded=false
-    log "Ожидание и загрузка конфигурации DockOVPN (макс. 60 сек)..."
-    while (( attempts < 30 )); do
+    log "Ожидание и загрузка конфигурации DockOVPN (макс. 3 мин, первый старт генерирует PKI)..."
+    while (( attempts < 90 )); do
         if curl -sf --max-time 10 "http://127.0.0.1:${http_port}/" -o "$ovpn_out" 2>/dev/null \
            && [[ -s "$ovpn_out" ]]; then
             downloaded=true
@@ -96,6 +96,14 @@ EOF
         return 1
     fi
     chmod 600 "$ovpn_out"
+
+    # DockOVPN v1.14 не добавляет redirect-gateway в клиентский конфиг.
+    # Без него Windows/Linux клиент подключается, но НЕ меняет default route —
+    # интернет-трафик идёт мимо VPN. Вставляем недостающие директивы.
+    if ! grep -q "redirect-gateway" "$ovpn_out"; then
+        log "Добавление redirect-gateway и DNS в .ovpn..."
+        sed -i '/^<ca>/i redirect-gateway def1 bypass-dhcp\ndhcp-option DNS 8.8.8.8' "$ovpn_out"
+    fi
 
     if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
         cp "$ovpn_out" "/home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
