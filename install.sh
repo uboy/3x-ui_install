@@ -42,23 +42,24 @@ on_error() {
 trap 'on_error ${LINENO}' ERR
 
 main() {
-  # Инициализация
+  # Инициализация — все переменные пустые, чтобы resolve_var мог восстановить
+  # значения из state-файла (не-пустая инициализация блокирует restore_var)
   DOMAIN=""
   EMAIL=""
-  VPN_USER="vpnuser"
+  VPN_USER=""
   VPN_PASS=""
   VPN_EXCLUDE_ROUTES=""
   INSTALL_XUI="false"
   INSTALL_OPENVPN="false"
   INSTALL_OPENCONNECT="false"
   INSTALL_AMNEZIA="false"
-  INSTALL_MODE="simple"
-  SSH_PORT="22"
-  PORT_XUI_PANEL="2053"
-  PORT_XUI_REALITY="443"
-  PORT_OPENVPN="1194"
-  PORT_OPENCONNECT="4443"
-  PORT_AMNEZIA="51820"
+  INSTALL_MODE=""
+  SSH_PORT=""
+  PORT_XUI_PANEL=""
+  PORT_XUI_REALITY=""
+  PORT_OPENVPN=""
+  PORT_OPENCONNECT=""
+  PORT_AMNEZIA=""
   NEW_USER=""
   NEW_PASS=""
   PANEL_ADMIN_USER=""
@@ -68,17 +69,22 @@ main() {
   module_base_check_os
   load_install_state
 
-  resolve_var DOMAIN ""
-  resolve_var EMAIL ""
-  resolve_var VPN_USER "vpnuser"
+  resolve_var DOMAIN             ""
+  resolve_var EMAIL              ""
+  resolve_var VPN_USER           "vpnuser"
+  resolve_var VPN_PASS           ""
   resolve_var VPN_EXCLUDE_ROUTES ""
-  resolve_var INSTALL_MODE "simple"
-  resolve_var SSH_PORT "22"
-  resolve_var PORT_XUI_PANEL    "2053"
-  resolve_var PORT_XUI_REALITY  "443"
-  resolve_var PORT_OPENVPN      "1194"
-  resolve_var PORT_OPENCONNECT  "4443"
-  resolve_var PORT_AMNEZIA      "51820"
+  resolve_var INSTALL_MODE       "simple"
+  resolve_var SSH_PORT           "22"
+  resolve_var NEW_USER           ""
+  resolve_var NEW_PASS           ""
+  resolve_var PANEL_ADMIN_USER   ""
+  resolve_var PANEL_ADMIN_PASS   ""
+  resolve_var PORT_XUI_PANEL     "2053"
+  resolve_var PORT_XUI_REALITY   "443"
+  resolve_var PORT_OPENVPN       "1194"
+  resolve_var PORT_OPENCONNECT   "4443"
+  resolve_var PORT_AMNEZIA       "51820"
 
   if ! command -v whiptail &>/dev/null; then
     log "Установка whiptail (интерактивный интерфейс)..."

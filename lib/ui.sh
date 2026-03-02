@@ -218,23 +218,24 @@ ui_get_ports() {
     [[ ${#_vars[@]} -eq 0 ]] && return 0
 
     while true; do
-        local form_args=()
-        local row=1
+        # Собираем порты по одному через inputbox (--form не поддерживается надёжно в whiptail)
+        local _values=()
+        local _cancelled=false
         local i
         for (( i=0; i<${#_labels[@]}; i++ )); do
-            form_args+=("${_labels[$i]}" "$row" 1 "${_defaults[$i]}" "$row" 26 7 5)
-            (( row++ ))
+            local _val
+            if ! _val=$(whiptail --title "Настройка портов ($(( i+1 ))/${#_labels[@]})" \
+                --inputbox "${_labels[$i]}" \
+                8 52 "${_defaults[$i]}" 3>&1 1>&2 2>&3); then
+                _cancelled=true
+                break
+            fi
+            _values+=("$_val")
         done
 
-        local form_height=$(( ${#_labels[@]} + 9 ))
-        local result
-        result=$(whiptail --title "Настройка портов сервисов" \
-            --form "Укажите порты. По умолчанию — стандартные значения.\nКаждый порт должен быть уникальным (1-65535)." \
-            "$form_height" 65 "${#_labels[@]}" \
-            "${form_args[@]}" 3>&1 1>&2 2>&3) || exit 0
-
-        local _values=()
-        mapfile -t _values <<< "$result"
+        if [[ "$_cancelled" == "true" ]]; then
+            exit 0
+        fi
 
         local _ok=true
         local _err=""
