@@ -36,9 +36,14 @@ module_openvpn_install() {
         rm -f /etc/openvpn/server.conf /etc/openvpn/ta.key
     fi
 
-    # ── Install ─────────────────────────────────────────────────────────────
     log "Установка OpenVPN (DockOVPN)..."
     mkdir -p "$ovpn_dir" "$data_dir"
+    mkdir -p /etc/openvpn
+
+    local http_port=38080
+    while ! check_port_free "$http_port"; do
+        (( http_port++ ))
+    done
 
     cat > "${ovpn_dir}/docker-compose.yml" <<EOF
 services:
