@@ -63,11 +63,18 @@ EOF
 
     ( cd "$ovpn_dir" && docker compose up -d )
 
-    # ── Wait for first-run config generation ────────────────────────────────
-    log "Ожидание генерации конфигурации DockOVPN (макс. 60 сек)..."
+    # ── Download .ovpn: health-check and download in one loop ───────────────
+    # DockOVPN's HTTP server serves the .ovpn ONCE then shuts down —
+    # a separate health-check curl would consume the file and discard it.
+    # Solution: attempt the real download on every iteration; save on success.
+    local ovpn_out="/etc/openvpn/${VPN_USER:-vpnuser}.ovpn"
     local attempts=0
+    local downloaded=false
+    log "Ожидание и загрузка конфигурации DockOVPN (макс. 60 сек)..."
     while (( attempts < 30 )); do
-        if curl -sf --max-time 2 "http://127.0.0.1:${http_port}/" >/dev/null 2>&1; then
+        if curl -sf --max-time 10 "http://127.0.0.1:${http_port}/" -o "$ovpn_out" 2>/dev/null \
+           && [[ -s "$ovpn_out" ]]; then
+            downloaded=true
             break
         fi
         local cstate
@@ -81,17 +88,9 @@ EOF
         sleep 2
     done
 
-    if (( attempts >= 30 )); then
-        error "DockOVPN не ответил за 60 секунд. Логи:"
+    if [[ "$downloaded" != "true" ]]; then
+        error "DockOVPN не отдал .ovpn за 60 секунд. Логи:"
         docker logs dockovpn --tail=30
-        return 1
-    fi
-
-    # ── Download .ovpn while HTTP server is still active (60-sec window) ───
-    local ovpn_out="/etc/openvpn/${VPN_USER:-vpnuser}.ovpn"
-    log "Загрузка клиентской конфигурации (.ovpn)..."
-    if ! curl -sf --max-time 10 "http://127.0.0.1:${http_port}/" -o "$ovpn_out"; then
-        error "Не удалось скачать .ovpn файл с DockOVPN"
         return 1
     fi
     chmod 600 "$ovpn_out"
