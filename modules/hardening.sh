@@ -27,13 +27,18 @@ EOF
         # Validate username before any system changes
         is_valid_username "$admin_user" || die "Invalid admin username: $admin_user"
 
+        local admin_pass="${NEW_PASS:-}"
         if ! id -u "$admin_user" >/dev/null 2>&1; then
             log "Создание администратора системы: $admin_user..."
             adduser --disabled-password --gecos "" "$admin_user"
-            local admin_pass="${NEW_PASS:-$(generate_strong_secret)}"
-            echo "$admin_user:$admin_pass" | chpasswd
+            [[ -z "$admin_pass" ]] && admin_pass=$(generate_strong_secret)
             usermod -aG sudo "$admin_user"
             NEW_USER="$admin_user"
+        fi
+
+        if [[ -n "$admin_pass" ]]; then
+            log "Обновление пароля для $admin_user..."
+            echo "$admin_user:$admin_pass" | chpasswd
             NEW_PASS="$admin_pass"
         fi
 

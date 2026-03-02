@@ -104,8 +104,11 @@ EOF
         log "Копия .ovpn: /home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
     fi
 
-    # Настройка сети (NAT через UFW)
-    firewall_configure_nat "10.8.0.0/24"
+    # DockOVPN работает в Docker: VPN-подсеть (10.8.0.0/24) находится внутри
+    # контейнера и HOST её не видит напрямую. NAT для 10.8.0.x делает сам
+    # контейнер (10.8.0.x → 172.17.0.2), а NAT для Docker bridge добавляется
+    # автоматически через firewall_configure_nat при установке других модулей
+    # или при наличии docker0. Здесь нужно только открыть порт.
     firewall_allow "${ovpn_port}" udp
     success "OpenVPN (DockOVPN) установлен и запущен на порту ${ovpn_port}/UDP."
 

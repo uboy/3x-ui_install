@@ -156,7 +156,9 @@ ui_get_hardening_info() {
                 break  # Cancel → back to yes/no
             fi
             if [[ -z "${_pass:-}" ]]; then
-                NEW_PASS=$(generate_strong_secret)
+                if [[ -z "${NEW_PASS:-}" ]]; then
+                    NEW_PASS=$(generate_strong_secret)
+                fi
                 _pass_ok=true
                 break
             elif (( ${#_pass} >= 12 )); then

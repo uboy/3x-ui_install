@@ -3,10 +3,14 @@
 firewall_init() {
     log "Инициализация фаервола (UFW)..."
     apt-get install -y ufw
-    
+
     # Разрешаем форвардинг трафика (нужно для VPN)
     sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
-    
+
+    # UFW не раскомментирует ip_forward автоматически — делаем явно
+    sed -i 's|#net/ipv4/ip_forward=1|net/ipv4/ip_forward=1|' /etc/ufw/sysctl.conf
+    sysctl -w net.ipv4.ip_forward=1
+
     ufw default deny incoming
     ufw default allow outgoing
 }
@@ -60,6 +64,20 @@ EOF
         local rule_escaped
         rule_escaped=$(printf '%s' "$rule" | sed 's/[|&\\/]/\\&/g')
         sed -i "/^\*nat/,/^COMMIT/ s|^COMMIT|${rule_escaped}\nCOMMIT|" /etc/ufw/before.rules
+    fi
+
+    # 4. При наличии Docker сохраняем его правило маскарадинга.
+    # ufw enable/reload сбрасывает nat-таблицу через iptables-restore,
+    # что удаляет правило, которое Docker добавил при запуске контейнера.
+    # Без него контейнеры (включая DockOVPN) теряют выход в интернет.
+    if ip link show docker0 &>/dev/null; then
+        local docker_rule="-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE"
+        if ! grep -Fq -- "$docker_rule" /etc/ufw/before.rules; then
+            log "Добавление MASQUERADE для Docker bridge (172.17.0.0/16)..."
+            local docker_rule_escaped
+            docker_rule_escaped=$(printf '%s' "$docker_rule" | sed 's/[|&\\/]/\\&/g')
+            sed -i "/^\*nat/,/^COMMIT/ s|^COMMIT|${docker_rule_escaped}\nCOMMIT|" /etc/ufw/before.rules
+        fi
     fi
 
     success "Конфигурация NAT обновлена."
