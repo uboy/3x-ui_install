@@ -23,13 +23,15 @@ ui_select_components() {
     "XUI" "3x-ui Panel (Xray/VLESS/Reality)" ON \
     "OpenVPN" "Классический OpenVPN сервер" OFF \
     "OpenConnect" "Cisco AnyConnect совместимый VPN" OFF \
-    "AmneziaWG" "AmneziaWG (обфусцированный WireGuard)" OFF 3>&1 1>&2 2>&3) || exit 0
+    "AmneziaWG" "AmneziaWG (обфусцированный WireGuard)" OFF \
+    "Dumbproxy" "HTTP/HTTPS прокси-сервер с авторизацией" OFF 3>&1 1>&2 2>&3) || exit 0
 
     # Сбрасываем флаги
     INSTALL_XUI="false"
     INSTALL_OPENVPN="false"
     INSTALL_OPENCONNECT="false"
     INSTALL_AMNEZIA="false"
+    INSTALL_DUMBPROXY="false"
 
     for choice in $choices; do
         case $choice in
@@ -37,11 +39,12 @@ ui_select_components() {
             "\"OpenVPN\"") INSTALL_OPENVPN="true" ;;
             "\"OpenConnect\"") INSTALL_OPENCONNECT="true" ;;
             "\"AmneziaWG\"") INSTALL_AMNEZIA="true" ;;
+            "\"Dumbproxy\"") INSTALL_DUMBPROXY="true" ;;
         esac
     done
 
     # Если ничего не выбрано - выходим
-    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_AMNEZIA" == "false" ]]; then
+    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_AMNEZIA" == "false" && "$INSTALL_DUMBPROXY" == "false" ]]; then
         whiptail --title "Ошибка" --msgbox "Ничего не выбрано. Установка отменена." 10 60
         exit 0
     fi
@@ -214,6 +217,11 @@ ui_get_ports() {
         _vars+=(PORT_AMNEZIA)
         _defaults+=("${PORT_AMNEZIA:-51820}")
     }
+    [[ "${INSTALL_DUMBPROXY:-false}" == "true" ]] && {
+        _labels+=("Порт Dumbproxy (TCP):")
+        _vars+=(PORT_DUMBPROXY)
+        _defaults+=("${PORT_DUMBPROXY:-8080}")
+    }
 
     [[ ${#_vars[@]} -eq 0 ]] && return 0
 
@@ -367,6 +375,15 @@ ui_final_report() {
         report="${report}\n"
     elif [[ "$INSTALL_AMNEZIA" == "skipped" ]]; then
         report="${report}${YELLOW}--- AmneziaWG (Пропущено) ---${NC}\n\n"
+    fi
+
+    if [[ "$INSTALL_DUMBPROXY" == "true" ]]; then
+        report="${report}${BLUE}${BOLD}--- Dumbproxy (HTTP/HTTPS Proxy) ---${NC}\n"
+        report="${report}Адрес: ${DOMAIN}:${PORT_DUMBPROXY:-8080}\n"
+        report="${report}Пользователь: ${VPN_USER:-vpnuser}\n"
+        report="${report}Пароль: ${VPN_PASS}\n\n"
+    elif [[ "$INSTALL_DUMBPROXY" == "skipped" ]]; then
+        report="${report}${YELLOW}--- Dumbproxy (Пропущено) ---${NC}\n\n"
     fi
 
     report="${report}${GREEN}${BOLD}Все пароли сохранены в файле состояния: /root/.aegis-vpn.state${NC}\n"

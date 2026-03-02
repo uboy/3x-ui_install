@@ -14,7 +14,7 @@ for f in common.sh state.sh utils.sh ui.sh firewall.sh cert.sh; do
 done
 
 # Source modules
-for f in base.sh hardening.sh xui.sh openvpn.sh openconnect.sh amnezia.sh; do
+for f in base.sh hardening.sh xui.sh openvpn.sh openconnect.sh amnezia.sh dumbproxy.sh; do
     if [[ ! -f "${SCRIPT_DIR}/modules/$f" ]]; then
         echo "ERROR: Module ${SCRIPT_DIR}/modules/$f not found!"
         exit 1
@@ -53,6 +53,7 @@ main() {
   INSTALL_OPENVPN="false"
   INSTALL_OPENCONNECT="false"
   INSTALL_AMNEZIA="false"
+  INSTALL_DUMBPROXY="false"
   INSTALL_MODE=""
   SSH_PORT=""
   PORT_XUI_PANEL=""
@@ -60,6 +61,7 @@ main() {
   PORT_OPENVPN=""
   PORT_OPENCONNECT=""
   PORT_AMNEZIA=""
+  PORT_DUMBPROXY=""
   NEW_USER=""
   NEW_PASS=""
   PANEL_ADMIN_USER=""
@@ -85,6 +87,8 @@ main() {
   resolve_var PORT_OPENVPN       "1194"
   resolve_var PORT_OPENCONNECT   "4443"
   resolve_var PORT_AMNEZIA       "51820"
+  resolve_var PORT_DUMBPROXY    "8080"
+  resolve_var INSTALL_DUMBPROXY "false"
 
   if ! command -v whiptail &>/dev/null; then
     log "Установка whiptail (интерактивный интерфейс)..."
@@ -148,6 +152,7 @@ main() {
   fi
   if [[ "$INSTALL_OPENCONNECT" == "true" ]]; then module_openconnect_install; fi
   if [[ "$INSTALL_AMNEZIA" == "true" ]]; then module_amnezia_install; fi
+  if [[ "$INSTALL_DUMBPROXY" == "true" ]]; then module_dumbproxy_install; fi
 
   log "Шаг 7: Настройка фаервола..."
   firewall_allow "${SSH_PORT:-22}"
