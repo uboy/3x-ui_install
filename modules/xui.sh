@@ -48,7 +48,7 @@ EOF
 
     log "Ожидание готовности панели..."
     local attempts=0
-    until curl -sf --max-time 2 "http://127.0.0.1:2053/" >/dev/null 2>&1 || (( ++attempts >= 30 )); do
+    until curl -sf --max-time 2 "http://127.0.0.1:${PORT_XUI_PANEL:-2053}/" >/dev/null 2>&1 || (( ++attempts >= 30 )); do
         sleep 2
     done
     if (( attempts >= 30 )); then
@@ -62,7 +62,7 @@ module_xui_configure() {
     [[ "$INSTALL_XUI" == "true" ]] || return 0
 
     log "Настройка параметров 3x-ui через API..."
-    local panel_url="http://127.0.0.1:2053"
+    local panel_url="http://127.0.0.1:${PORT_XUI_PANEL:-2053}"
 
     # Сначала пробуем уже сгенерированные учётные данные (повторный запуск скрипта)
     if ! xui_api_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$panel_url"; then
@@ -112,9 +112,9 @@ module_xui_configure() {
             --arg sid "$sid" \
             '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"google.com:443",serverNames:["google.com"],privateKey:$pk,shortIds:[$sid]}}')
 
-        if xui_api_add_inbound "Aegis_VLESS_Reality" "443" "vless" "$settings" "$stream_settings" "$panel_url"; then
-            success "Инбаунд Aegis_VLESS_Reality создан на порту 443."
-            firewall_allow 443
+        if xui_api_add_inbound "Aegis_VLESS_Reality" "${PORT_XUI_REALITY:-443}" "vless" "$settings" "$stream_settings" "$panel_url"; then
+            success "Инбаунд Aegis_VLESS_Reality создан на порту ${PORT_XUI_REALITY:-443}."
+            firewall_allow "${PORT_XUI_REALITY:-443}"
         fi
     fi
 }

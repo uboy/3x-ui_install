@@ -59,7 +59,7 @@ module_amnezia_install() {
 [Interface]
 PrivateKey = $private_key
 Address = 10.8.0.1/24
-ListenPort = 51820
+ListenPort = ${PORT_AMNEZIA:-51820}
 J1 = $(shuf -i 10-100 -n 1)
 J2 = $(shuf -i 10-100 -n 1)
 S1 = $(shuf -i 10-100 -n 1)
@@ -86,7 +86,7 @@ services:
     # Используем awg-quick для запуска
     entrypoint: /bin/sh -c "awg-quick up wg0 && tail -f /dev/null"
     ports:
-      - "51820:51820/udp"
+      - "${PORT_AMNEZIA:-51820}:${PORT_AMNEZIA:-51820}/udp"
     restart: unless-stopped
 EOF
 
@@ -132,7 +132,7 @@ H4 = $(grep "^H4" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
 
 [Peer]
 PublicKey = $public_key
-Endpoint = $DOMAIN:51820
+Endpoint = $DOMAIN:${PORT_AMNEZIA:-51820}
 AllowedIPs = 0.0.0.0/0
 EOF
 
@@ -150,6 +150,6 @@ EOF
     base64 "${AMN_DIR}/amnezia_client.conf"
     echo "==========================================="
 
-    firewall_allow 51820 udp
+    firewall_allow "${PORT_AMNEZIA:-51820}" udp
     success "AmneziaWG успешно настроен на базе образа ${working_image}."
 }

@@ -54,6 +54,11 @@ main() {
   INSTALL_AMNEZIA="false"
   INSTALL_MODE="simple"
   SSH_PORT="22"
+  PORT_XUI_PANEL="2053"
+  PORT_XUI_REALITY="443"
+  PORT_OPENVPN="1194"
+  PORT_OPENCONNECT="4443"
+  PORT_AMNEZIA="51820"
   NEW_USER=""
   NEW_PASS=""
   PANEL_ADMIN_USER=""
@@ -69,6 +74,11 @@ main() {
   resolve_var VPN_EXCLUDE_ROUTES ""
   resolve_var INSTALL_MODE "simple"
   resolve_var SSH_PORT "22"
+  resolve_var PORT_XUI_PANEL    "2053"
+  resolve_var PORT_XUI_REALITY  "443"
+  resolve_var PORT_OPENVPN      "1194"
+  resolve_var PORT_OPENCONNECT  "4443"
+  resolve_var PORT_AMNEZIA      "51820"
 
   if ! command -v whiptail &>/dev/null; then
     log "Установка whiptail (интерактивный интерфейс)..."
@@ -81,17 +91,18 @@ main() {
   ui_select_components
   ui_get_basic_info
   ui_get_hardening_info
-  
+  ui_get_ports
+
   log "Шаг 3: Подтверждение и начало установки..."
   ui_confirm_install
   
   # Проверка конфликтов портов
   declare -A USED_PORTS
-  USED_PORTS[443]="3x-ui Reality"
-  USED_PORTS[1194]="OpenVPN"
-  USED_PORTS[4443]="OpenConnect"
-  USED_PORTS[51820]="AmneziaWG"
-  USED_PORTS[2053]="3x-ui Panel"
+  USED_PORTS["${PORT_XUI_REALITY:-443}"]="3x-ui Reality"
+  USED_PORTS["${PORT_OPENVPN:-1194}"]="OpenVPN"
+  USED_PORTS["${PORT_OPENCONNECT:-4443}"]="OpenConnect"
+  USED_PORTS["${PORT_AMNEZIA:-51820}"]="AmneziaWG"
+  USED_PORTS["${PORT_XUI_PANEL:-2053}"]="3x-ui Panel"
   
   # Если SSH_PORT изменен — проверяем конфликты
   if [[ "${SSH_PORT:-22}" != "22" ]]; then

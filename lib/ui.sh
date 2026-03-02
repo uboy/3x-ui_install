@@ -163,6 +163,110 @@ ui_get_hardening_info() {
     done
 }
 
+ui_get_ports() {
+    local _labels=()
+    local _vars=()
+    local _defaults=()
+
+    [[ "${INSTALL_XUI:-false}" == "true" ]] && {
+        _labels+=("Порт панели 3x-ui:")
+        _vars+=(PORT_XUI_PANEL)
+        _defaults+=("${PORT_XUI_PANEL:-2053}")
+        _labels+=("Порт VLESS Reality:")
+        _vars+=(PORT_XUI_REALITY)
+        _defaults+=("${PORT_XUI_REALITY:-443}")
+    }
+    [[ "${INSTALL_OPENVPN:-false}" == "true" ]] && {
+        _labels+=("Порт OpenVPN (UDP):")
+        _vars+=(PORT_OPENVPN)
+        _defaults+=("${PORT_OPENVPN:-1194}")
+    }
+    [[ "${INSTALL_OPENCONNECT:-false}" == "true" ]] && {
+        _labels+=("Порт OpenConnect:")
+        _vars+=(PORT_OPENCONNECT)
+        _defaults+=("${PORT_OPENCONNECT:-4443}")
+    }
+    [[ "${INSTALL_AMNEZIA:-false}" == "true" ]] && {
+        _labels+=("Порт AmneziaWG (UDP):")
+        _vars+=(PORT_AMNEZIA)
+        _defaults+=("${PORT_AMNEZIA:-51820}")
+    }
+
+    [[ ${#_vars[@]} -eq 0 ]] && return 0
+
+    while true; do
+        local form_args=()
+        local row=1
+        local i
+        for (( i=0; i<${#_labels[@]}; i++ )); do
+            form_args+=("${_labels[$i]}" "$row" 1 "${_defaults[$i]}" "$row" 26 7 5)
+            (( row++ ))
+        done
+
+        local form_height=$(( ${#_labels[@]} + 9 ))
+        local result
+        result=$(whiptail --title "Настройка портов сервисов" \
+            --form "Укажите порты. По умолчанию — стандартные значения.\nКаждый порт должен быть уникальным (1-65535)." \
+            "$form_height" 65 "${#_labels[@]}" \
+            "${form_args[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+        local _values=()
+        mapfile -t _values <<< "$result"
+
+        local _ok=true
+        local _err=""
+        local j
+        # Validate each port number
+        for (( j=0; j<${#_vars[@]}; j++ )); do
+            local p="${_values[$j]:-}"
+            if ! [[ "$p" =~ ^[0-9]+$ ]] || (( p < 1 || p > 65535 )); then
+                _ok=false
+                _err="Некорректный порт '${p}' для ${_labels[$j]}\nДиапазон: 1-65535."
+                break
+            fi
+        done
+
+        # Check for duplicates among service ports
+        if [[ "$_ok" == "true" ]]; then
+            declare -A _port_seen=()
+            for (( j=0; j<${#_vars[@]}; j++ )); do
+                local p="${_values[$j]}"
+                if [[ -n "${_port_seen[$p]+x}" ]]; then
+                    _ok=false
+                    _err="Конфликт: порт $p используется для '${_port_seen[$p]}' и '${_labels[$j]}'.\nКаждый сервис должен иметь уникальный порт."
+                    break
+                fi
+                _port_seen[$p]="${_labels[$j]}"
+            done
+        fi
+
+        # Check collision with SSH port
+        if [[ "$_ok" == "true" ]]; then
+            for (( j=0; j<${#_vars[@]}; j++ )); do
+                if [[ "${_values[$j]}" == "${SSH_PORT:-22}" ]]; then
+                    _ok=false
+                    _err="Конфликт: порт ${_values[$j]} (${_labels[$j]}) совпадает с портом SSH (${SSH_PORT:-22})."
+                    break
+                fi
+            done
+        fi
+
+        if [[ "$_ok" == "true" ]]; then
+            for (( j=0; j<${#_vars[@]}; j++ )); do
+                printf -v "${_vars[$j]}" '%s' "${_values[$j]}"
+            done
+            save_install_state
+            return 0
+        fi
+
+        whiptail --title "Ошибка" --msgbox "$_err" 10 65
+        # Preserve user-entered values as new defaults for retry
+        for (( j=0; j<${#_vars[@]}; j++ )); do
+            [[ -n "${_values[$j]:-}" ]] && _defaults[$j]="${_values[$j]}"
+        done
+    done
+}
+
 ui_confirm_install() {
     if whiptail --title "Aegis VPN Toolbox" --yesno "Начать установку выбранных компонентов?" 10 60; then
         return 0
@@ -199,17 +303,17 @@ ui_final_report() {
 
     if [[ "$INSTALL_XUI" == "true" ]]; then
         report="${report}${BLUE}${BOLD}--- 3x-ui (Xray Panel) ---${NC}\n"
-        report="${report}Панель управления: http://${DOMAIN}:2053\n"
+        report="${report}Панель управления: http://${DOMAIN}:${PORT_XUI_PANEL:-2053}\n"
         report="${report}Логин: ${PANEL_ADMIN_USER:-admin}\n"
         report="${report}Пароль: ${PANEL_ADMIN_PASS:-admin}\n"
-        report="${report}VLESS Reality порт: 443\n\n"
+        report="${report}VLESS Reality порт: ${PORT_XUI_REALITY:-443}\n\n"
     elif [[ "$INSTALL_XUI" == "skipped" ]]; then
         report="${report}${YELLOW}--- 3x-ui (Пропущено) ---${NC}\n\n"
     fi
 
     if [[ "$INSTALL_OPENVPN" == "true" ]]; then
         report="${report}${BLUE}${BOLD}--- OpenVPN ---${NC}\n"
-        report="${report}Протокол/Порт: UDP / 1194\n"
+        report="${report}Протокол/Порт: UDP / ${PORT_OPENVPN:-1194}\n"
         report="${report}Пользователь: ${VPN_USER:-vpnuser}\n"
         report="${report}Файл конфигурации (.ovpn): /etc/openvpn/${VPN_USER:-vpnuser}.ovpn\n"
         if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
@@ -222,7 +326,7 @@ ui_final_report() {
 
     if [[ "$INSTALL_OPENCONNECT" == "true" ]]; then
         report="${report}${BLUE}${BOLD}--- OpenConnect (Cisco AnyConnect) ---${NC}\n"
-        report="${report}Сервер: ${DOMAIN}:4443\n"
+        report="${report}Сервер: ${DOMAIN}:${PORT_OPENCONNECT:-4443}\n"
         report="${report}Пользователь: ${VPN_USER:-vpnuser}\n"
         report="${report}Пароль: ${VPN_PASS}\n\n"
     elif [[ "$INSTALL_OPENCONNECT" == "skipped" ]]; then
@@ -231,7 +335,7 @@ ui_final_report() {
 
     if [[ "$INSTALL_AMNEZIA" == "true" ]]; then
         report="${report}${BLUE}${BOLD}--- AmneziaWG ---${NC}\n"
-        report="${report}Endpoint: ${DOMAIN}:51820/udp\n"
+        report="${report}Endpoint: ${DOMAIN}:${PORT_AMNEZIA:-51820}/udp\n"
         report="${report}Конфиг клиента: /opt/amnezia/amnezia_client.conf\n"
         if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
             report="${report}Копия (SSH): /home/${NEW_USER}/amnezia_client.conf\n"

@@ -42,8 +42,8 @@ module_openconnect_install() {
 auth = "plain[passwd=/etc/ocserv/ocpasswd]"
 
 # Сетевые настройки
-tcp-port = 4443
-udp-port = 4443
+tcp-port = ${PORT_OPENCONNECT:-4443}
+udp-port = ${PORT_OPENCONNECT:-4443}
 device = vpns
 socket-file = /run/ocserv.socket
 run-as-user = ocserv
@@ -111,8 +111,8 @@ EOF
     
     # 5. Сеть (NAT через UFW)
     firewall_configure_nat "192.168.10.0/24"
-    firewall_allow 4443 tcp
-    firewall_allow 4443 udp
+    firewall_allow "${PORT_OPENCONNECT:-4443}" tcp
+    firewall_allow "${PORT_OPENCONNECT:-4443}" udp
     
     # 6. Запуск и проверка
     log "Запуск сервиса ocserv..."
@@ -128,5 +128,5 @@ EOF
         return 1
     fi
 
-    success "OpenConnect успешно запущен на порту 4443."
+    success "OpenConnect успешно запущен на порту ${PORT_OPENCONNECT:-4443}."
 }

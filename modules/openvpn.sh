@@ -81,7 +81,7 @@ VARSEOF
     # -------------------------------------------------------------------------
     log "Запись /etc/openvpn/server.conf..."
     cat > /etc/openvpn/server.conf <<SRVEOF
-port 1194
+port ${PORT_OPENVPN:-1194}
 proto udp
 dev tun
 user nobody
@@ -142,7 +142,7 @@ SRVEOF
     mkdir -p /var/log/openvpn
 
     firewall_configure_nat "10.8.0.0/24"
-    firewall_allow 1194 udp
+    firewall_allow "${PORT_OPENVPN:-1194}" udp
 
     systemctl daemon-reload
     systemctl enable openvpn@server
@@ -179,7 +179,7 @@ client
 nobind
 dev tun
 proto udp
-remote ${DOMAIN} 1194
+remote ${DOMAIN} ${PORT_OPENVPN:-1194}
 
 remote-cert-tls server
 key-direction 1
