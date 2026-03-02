@@ -3,223 +3,109 @@
 module_openvpn_install() {
     [[ "$INSTALL_OPENVPN" == "true" ]] || return 0
 
-    local _native_active=false
-    local _docker_legacy=false
+    local ovpn_dir="/opt/dockovpn"
+    local data_dir="/root/dockovpn_data"
+    local ovpn_port="${PORT_OPENVPN:-1194}"
+    # HTTP port for first-run .ovpn download (active 60 sec after container start)
+    # Bound to 127.0.0.1 only — not exposed to the internet
+    local http_port="8088"
 
-    # Detect existing installations
-    if systemctl is-active --quiet openvpn@server || [[ -f /etc/openvpn/server.conf ]]; then
-        _native_active=true
+    # ── Detect existing installation ────────────────────────────────────────
+    local _existing=false
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^dockovpn$"; then
+        _existing=true
     fi
-    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^openvpn$"; then
-        _docker_legacy=true
+    # Also detect legacy native install
+    if [[ "$_existing" == "false" ]] && \
+       { systemctl is-active --quiet openvpn@server 2>/dev/null || [[ -f /etc/openvpn/server.conf ]]; }; then
+        _existing=true
     fi
 
-    if [[ "$_native_active" == true ]] || [[ "$_docker_legacy" == true ]]; then
-        if ! ui_ask_reinstall "OpenVPN"; then
+    if [[ "$_existing" == "true" ]]; then
+        if ! ui_ask_reinstall "OpenVPN (DockOVPN)"; then
             log "Пропуск установки OpenVPN."
             INSTALL_OPENVPN="skipped"
             return 0
         fi
-
         log "Очистка старой установки OpenVPN..."
-
-        # Remove native install artifacts
+        [[ -f "${ovpn_dir}/docker-compose.yml" ]] && \
+            ( cd "$ovpn_dir" && docker compose down -v 2>/dev/null ) || true
+        docker rm -f dockovpn 2>/dev/null || true
+        rm -rf "$ovpn_dir" "$data_dir"
+        # Native cleanup
         systemctl stop openvpn@server 2>/dev/null || true
         systemctl disable openvpn@server 2>/dev/null || true
         rm -rf /etc/openvpn/easy-rsa
-        rm -f  /etc/openvpn/server.conf
-        rm -f  /etc/openvpn/ta.key
+        rm -f /etc/openvpn/server.conf /etc/openvpn/ta.key
+    fi
 
-        # Remove Docker legacy install
-        if [[ "$_docker_legacy" == true ]]; then
-            local _docker_dir="/opt/openvpn"
-            if [[ -f "${_docker_dir}/docker-compose.yml" ]]; then
-                ( cd "$_docker_dir" && docker compose down -v 2>/dev/null ) || true
-            fi
-            rm -rf "$_docker_dir"
+    # ── Install ─────────────────────────────────────────────────────────────
+    log "Установка OpenVPN (DockOVPN)..."
+    mkdir -p "$ovpn_dir" "$data_dir"
+
+    cat > "${ovpn_dir}/docker-compose.yml" <<EOF
+services:
+  dockovpn:
+    image: alekslitvinenk/openvpn
+    container_name: dockovpn
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    restart: always
+    environment:
+      - HOST_ADDR=${DOMAIN}
+    ports:
+      - "${ovpn_port}:1194/udp"
+      - "127.0.0.1:${http_port}:8080/tcp"
+    volumes:
+      - ${data_dir}:/opt/Dockovpn_data
+EOF
+
+    ( cd "$ovpn_dir" && docker compose up -d )
+
+    # ── Wait for first-run config generation ────────────────────────────────
+    log "Ожидание генерации конфигурации DockOVPN (макс. 60 сек)..."
+    local attempts=0
+    while (( attempts < 30 )); do
+        if curl -sf --max-time 2 "http://127.0.0.1:${http_port}/" >/dev/null 2>&1; then
+            break
         fi
-    fi
+        local cstate
+        cstate=$(docker inspect --format '{{.State.Status}}' dockovpn 2>/dev/null || true)
+        if [[ "$cstate" == "exited" || "$cstate" == "dead" ]]; then
+            error "Контейнер DockOVPN упал (State: ${cstate}). Логи:"
+            docker logs dockovpn --tail=30
+            return 1
+        fi
+        (( attempts++ )) || true
+        sleep 2
+    done
 
-    log "Установка пакетов openvpn и easy-rsa..."
-    apt-get install -y openvpn easy-rsa
-
-    # -------------------------------------------------------------------------
-    # PKI via easy-rsa 3.x
-    # -------------------------------------------------------------------------
-    local OVPN_PKI="/etc/openvpn/easy-rsa"
-
-    make-cadir "$OVPN_PKI"
-
-    # Write vars — single-quoted delimiter, no variable expansion needed
-    cat > "${OVPN_PKI}/vars" <<'VARSEOF'
-set_var EASYRSA_ALGO       ec
-set_var EASYRSA_CURVE      prime256v1
-set_var EASYRSA_CA_EXPIRE  3650
-set_var EASYRSA_CERT_EXPIRE 825
-set_var EASYRSA_BATCH      1
-VARSEOF
-
-    log "Инициализация PKI..."
-    (
-        export EASYRSA_BATCH=1
-        cd "$OVPN_PKI"
-        ./easyrsa init-pki
-        ./easyrsa build-ca nopass
-        ./easyrsa build-server-full server nopass
-        ./easyrsa gen-crl
-    )
-
-    # -------------------------------------------------------------------------
-    # TLS-auth key
-    # -------------------------------------------------------------------------
-    log "Генерация TLS-auth ключа..."
-    openvpn --genkey secret /etc/openvpn/ta.key
-    chmod 600 /etc/openvpn/ta.key
-
-    # -------------------------------------------------------------------------
-    # server.conf — SRVEOF is unquoted so $OVPN_PKI expands
-    # -------------------------------------------------------------------------
-    log "Запись /etc/openvpn/server.conf..."
-    cat > /etc/openvpn/server.conf <<SRVEOF
-port ${PORT_OPENVPN:-1194}
-proto udp
-dev tun
-user nobody
-group nogroup
-
-ca   ${OVPN_PKI}/pki/ca.crt
-cert ${OVPN_PKI}/pki/issued/server.crt
-key  ${OVPN_PKI}/pki/private/server.key
-dh   none
-ecdh-curve prime256v1
-tls-auth /etc/openvpn/ta.key 0
-crl-verify ${OVPN_PKI}/pki/crl.pem
-
-server 10.8.0.0 255.255.255.0
-ifconfig-pool-persist /var/log/openvpn/ipp.txt
-
-push "redirect-gateway def1 bypass-dhcp"
-push "dhcp-option DNS 8.8.8.8"
-push "dhcp-option DNS 1.1.1.1"
-
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:AES-128-GCM:AES-256-CBC
-auth SHA256
-tls-version-min 1.2
-
-keepalive 10 120
-persist-key
-persist-tun
-
-status /var/log/openvpn/openvpn-status.log
-log-append /var/log/openvpn/openvpn.log
-verb 3
-SRVEOF
-
-    # -------------------------------------------------------------------------
-    # Split-tunnel exclusion routes
-    # -------------------------------------------------------------------------
-    if [[ -n "${VPN_EXCLUDE_ROUTES:-}" ]]; then
-        log "Добавление маршрутов исключения (split-tunnel)..."
-        local _cidr _ip _prefix _mask
-        IFS=',' read -ra _exclude_addrs <<< "$VPN_EXCLUDE_ROUTES"
-        for _cidr in "${_exclude_addrs[@]}"; do
-            _cidr="${_cidr// /}"   # trim spaces
-            [[ -z "$_cidr" ]] && continue
-            _ip="${_cidr%%/*}"
-            _prefix="${_cidr##*/}"
-            _mask=$(python3 -c "import ipaddress; print(str(ipaddress.IPv4Network('0.0.0.0/${_prefix}').netmask))" 2>/dev/null) || {
-                warn "Не удалось вычислить маску для ${_cidr}, пропускаем"
-                continue
-            }
-            echo "push \"route ${_ip} ${_mask} net_gateway\"" >> /etc/openvpn/server.conf
-        done
-    fi
-
-    # -------------------------------------------------------------------------
-    # Log directory, firewall, service
-    # -------------------------------------------------------------------------
-    mkdir -p /var/log/openvpn
-
-    firewall_configure_nat "10.8.0.0/24"
-    firewall_allow "${PORT_OPENVPN:-1194}" udp
-
-    systemctl daemon-reload
-    systemctl enable openvpn@server
-    systemctl start openvpn@server
-
-    sleep 3
-
-    if ! systemctl is-active --quiet openvpn@server; then
-        error "OpenVPN не запустился. Последние строки журнала:"
-        journalctl -u openvpn@server -n 30 --no-pager >&2
+    if (( attempts >= 30 )); then
+        error "DockOVPN не ответил за 60 секунд. Логи:"
+        docker logs dockovpn --tail=30
         return 1
     fi
 
-    success "OpenVPN нативно установлен."
-}
-
-module_openvpn_configure() {
-    [[ "$INSTALL_OPENVPN" == "true" ]] || return 0
-    [[ "$INSTALL_OPENVPN" == "skipped" ]] && return 0
-
-    local client_name="${VPN_USER:-vpnuser}"
-    local pki_dir="/etc/openvpn/easy-rsa"
-    local ovpn_out="/etc/openvpn/${client_name}.ovpn"
-
-    log "Создание клиентского сертификата для ${client_name}..."
-    (
-        cd "$pki_dir"
-        EASYRSA_BATCH=1 ./easyrsa build-client-full "$client_name" nopass
-    )
-
-    log "Сборка inline .ovpn файла: ${ovpn_out}..."
-    cat > "$ovpn_out" <<EOF
-client
-nobind
-dev tun
-proto udp
-remote ${DOMAIN} ${PORT_OPENVPN:-1194}
-
-remote-cert-tls server
-key-direction 1
-
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:AES-128-GCM:AES-256-CBC
-auth SHA256
-tls-version-min 1.2
-
-resolv-retry infinite
-persist-key
-persist-tun
-verb 3
-
-<ca>
-$(cat "${pki_dir}/pki/ca.crt")
-</ca>
-<cert>
-$(openssl x509 -in "${pki_dir}/pki/issued/${client_name}.crt")
-</cert>
-<key>
-$(cat "${pki_dir}/pki/private/${client_name}.key")
-</key>
-<tls-auth>
-$(cat /etc/openvpn/ta.key)
-</tls-auth>
-EOF
-
+    # ── Download .ovpn while HTTP server is still active (60-sec window) ───
+    local ovpn_out="/etc/openvpn/${VPN_USER:-vpnuser}.ovpn"
+    log "Загрузка клиентской конфигурации (.ovpn)..."
+    if ! curl -sf --max-time 10 "http://127.0.0.1:${http_port}/" -o "$ovpn_out"; then
+        error "Не удалось скачать .ovpn файл с DockOVPN"
+        return 1
+    fi
     chmod 600 "$ovpn_out"
 
-    # Copy to admin user's home dir for easy SSH retrieval
     if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
-        cp "$ovpn_out" "/home/${NEW_USER}/${client_name}.ovpn"
-        chown "${NEW_USER}:${NEW_USER}" "/home/${NEW_USER}/${client_name}.ovpn"
-        chmod 600 "/home/${NEW_USER}/${client_name}.ovpn"
-        log "Копия конфига доступна пользователю ${NEW_USER}: ~/home/${NEW_USER}/${client_name}.ovpn"
+        cp "$ovpn_out" "/home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
+        chown "${NEW_USER}:${NEW_USER}" "/home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
+        chmod 600 "/home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
+        log "Копия .ovpn: /home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
     fi
 
-    # Print base64 to terminal so it can be retrieved from SSH session history
-    success "Конфигурация клиента OpenVPN готова: ${ovpn_out}"
+    firewall_allow "${ovpn_port}" udp
+    success "OpenVPN (DockOVPN) установлен и запущен на порту ${ovpn_port}/UDP."
+
     echo ""
     echo "====== .ovpn (base64) — скопируйте всё между линиями ======"
     base64 "$ovpn_out"
@@ -228,4 +114,10 @@ EOF
     echo "  \$b64 = '<вставьте base64 одной строкой>'"
     echo "  [System.Convert]::FromBase64String(\$b64) | Set-Content -Path vpnuser.ovpn -Encoding Byte"
     echo ""
+}
+
+module_openvpn_configure() {
+    # DockOVPN generates the client config automatically on first start.
+    # The .ovpn is downloaded during module_openvpn_install.
+    return 0
 }

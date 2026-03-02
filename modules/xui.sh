@@ -46,14 +46,27 @@ EOF
 
     ( cd "$PANEL_DIR" && docker compose up -d )
 
-    log "Ожидание готовности панели..."
+    log "Ожидание готовности панели (макс. 120 сек)..."
     local attempts=0
-    until curl -sf --max-time 2 "http://127.0.0.1:${PORT_XUI_PANEL:-2053}/" >/dev/null 2>&1 || (( ++attempts >= 30 )); do
+    while (( attempts < 60 )); do
+        if curl -sf --max-time 2 "http://127.0.0.1:${PORT_XUI_PANEL:-2053}/" >/dev/null 2>&1; then
+            break
+        fi
+        # Быстрый выход если контейнер упал
+        local cstate
+        cstate=$(docker inspect --format '{{.State.Status}}' 3x-ui 2>/dev/null || true)
+        if [[ "$cstate" == "exited" || "$cstate" == "dead" ]]; then
+            error "Контейнер 3x-ui упал (State: ${cstate}). Логи:"
+            docker logs 3x-ui --tail=30
+            return 1
+        fi
+        (( attempts++ )) || true
+        [[ $(( attempts % 10 )) -eq 0 ]] && log "Ожидание... (попытка ${attempts}/60)"
         sleep 2
     done
-    if (( attempts >= 30 )); then
-        error "Панель 3x-ui не ответила за 60 секунд"
-        docker logs 3x-ui | tail -20
+    if (( attempts >= 60 )); then
+        error "Панель 3x-ui не ответила за 120 секунд. Логи:"
+        docker logs 3x-ui --tail=30
         return 1
     fi
 }
