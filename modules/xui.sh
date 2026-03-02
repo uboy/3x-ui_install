@@ -31,8 +31,8 @@ module_xui_install() {
     PANEL_ADMIN_USER="$new_user"
     PANEL_ADMIN_PASS="$new_pass"
 
-    # Генерация конфига Docker Compose
-    cat > "${PANEL_DIR}/docker-compose.yml" <<EOF
+    # Генерация конфига Docker Compose (без credentials — ставятся через API после старта)
+    cat > "${PANEL_DIR}/docker-compose.yml" <<'EOF'
 services:
   3x-ui:
     image: ghcr.io/mhsanaei/3x-ui:latest
@@ -40,9 +40,6 @@ services:
     volumes:
       - ./db:/etc/x-ui
       - ./cert:/root/cert
-    environment:
-      - X_UI_ADMIN_USER=${new_user}
-      - X_UI_ADMIN_PWD=${new_pass}
     restart: unless-stopped
     network_mode: host
 EOF
@@ -67,14 +64,27 @@ module_xui_configure() {
     log "Настройка параметров 3x-ui через API..."
     local panel_url="http://127.0.0.1:2053"
 
-    # Login with pre-generated credentials (set during module_xui_install)
-    if xui_api_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$panel_url"; then
-        success "Аутентификация в панели успешна (пользователь: $PANEL_ADMIN_USER)."
-        save_install_state
-    else
-        error "Не удалось войти в панель с предустановленными учетными данными."
-        return 1
+    # Сначала пробуем уже сгенерированные учётные данные (повторный запуск скрипта)
+    if ! xui_api_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$panel_url"; then
+        # Первый запуск — панель стартует с дефолтными admin/admin
+        log "Вход с дефолтными учетными данными (admin/admin)..."
+        if ! xui_api_login "admin" "admin" "$panel_url"; then
+            error "Не удалось войти в панель ни с предустановленными, ни с дефолтными учетными данными."
+            return 1
+        fi
+        log "Замена дефолтных учетных данных на сгенерированные..."
+        if ! xui_api_update_user "admin" "admin" "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$panel_url"; then
+            error "Не удалось обновить учетные данные панели."
+            return 1
+        fi
+        # Проверяем новые данные
+        if ! xui_api_login "$PANEL_ADMIN_USER" "$PANEL_ADMIN_PASS" "$panel_url"; then
+            error "Новые учетные данные не приняты панелью."
+            return 1
+        fi
     fi
+    success "Аутентификация в панели успешна (пользователь: $PANEL_ADMIN_USER)."
+    save_install_state
 
     if [[ "${AUTO_CREATE_INBOUND:-true}" == "true" ]]; then
         log "Создание автоматического VLESS Reality инбаунда..."
