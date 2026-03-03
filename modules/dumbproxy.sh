@@ -32,14 +32,24 @@ module_dumbproxy_install() {
 
     # Get latest release download URL via GitHub API
     log "Получение последней версии dumbproxy..."
-    local download_url
-    download_url=$(curl -sS --max-time 15 \
-        "https://api.github.com/repos/SenseUnit/dumbproxy/releases/latest" \
+    local api_response download_url
+    api_response=$(curl -sS --max-time 15 \
+        "https://api.github.com/repos/SenseUnit/dumbproxy/releases/latest" 2>&1) || true
+
+    # Detect API-level errors (rate limit, auth, etc.)
+    if echo "$api_response" | jq -e '.message' &>/dev/null 2>&1; then
+        error "GitHub API вернул ошибку: $(echo "$api_response" | jq -r '.message')"
+        return 1
+    fi
+
+    download_url=$(echo "$api_response" \
         | jq -r --arg sfx "linux_${go_arch}.tar.gz" \
-            '.assets[] | select(.name | endswith($sfx)) | .browser_download_url')
+            '.assets[] | select(.name | endswith($sfx)) | .browser_download_url' \
+            2>/dev/null || true)
 
     if [[ -z "$download_url" || "$download_url" == "null" ]]; then
         error "Не удалось получить URL загрузки dumbproxy с GitHub API"
+        log "Ответ API: $(echo "$api_response" | head -c 500)"
         return 1
     fi
 
