@@ -73,6 +73,30 @@ check_port_free() {
   return 0
 }
 
+port_in_use_by_pattern() {
+  local port="$1"
+  local pattern="$2"
+  local proto="${3:-}"
+  local lines=""
+
+  if ! is_valid_port "$port"; then
+    return 1
+  fi
+  [[ -n "$pattern" ]] || return 1
+
+  lines=$(ss -H -tulnp 2>/dev/null | awk -v p=":${port}" -v proto="$proto" '
+    {
+      net = $1
+      laddr = $5
+      if (laddr !~ p"$") next
+      if (proto != "" && index(net, proto) != 1) next
+      print
+    }') || true
+
+  [[ -n "$lines" ]] || return 1
+  printf '%s\n' "$lines" | grep -qiE "$pattern"
+}
+
 generate_random_fixed() {
   local length="${1:-}"
   local charset="${2:-}"

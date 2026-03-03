@@ -130,7 +130,7 @@ main() {
           error "КОНФЛИКТ ПОРТОВ: Порт $SSH_PORT занят сервисом ${USED_PORTS[$SSH_PORT]}. Смените порт SSH!"
           exit 1
       fi
-      if ! check_port_free "$SSH_PORT"; then
+      if ! check_port_free "$SSH_PORT" && ! port_in_use_by_pattern "$SSH_PORT" "sshd" tcp; then
           error "Порт $SSH_PORT уже занят запущенным сервисом (проверено через ss)"
           exit 1
       fi

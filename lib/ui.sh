@@ -16,6 +16,37 @@ EOF
     printf "${BLUE}${BOLD}      --- Aegis VPN Toolbox ---${NC}\n"
 }
 
+ui_port_reusable_for_selected_service() {
+    local var_name="$1"
+    local port="$2"
+
+    case "$var_name" in
+        PORT_XUI_PANEL|PORT_XUI_REALITY)
+            docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^3x-ui$" || return 1
+            port_in_use_by_pattern "$port" "docker-proxy|dockerd|3x-ui|x-ui" tcp
+            ;;
+        PORT_OPENVPN)
+            docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^dockovpn$" || return 1
+            port_in_use_by_pattern "$port" "docker-proxy|dockerd|dockovpn" udp
+            ;;
+        PORT_OPENCONNECT)
+            (systemctl is-active --quiet ocserv 2>/dev/null || [[ -f /etc/ocserv/ocserv.conf ]]) || return 1
+            port_in_use_by_pattern "$port" "ocserv" || return 1
+            ;;
+        PORT_AMNEZIA)
+            docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^amneziawg$" || return 1
+            port_in_use_by_pattern "$port" "docker-proxy|dockerd|amneziawg" udp
+            ;;
+        PORT_DUMBPROXY)
+            (systemctl is-active --quiet dumbproxy 2>/dev/null || [[ -x /usr/local/bin/dumbproxy ]]) || return 1
+            port_in_use_by_pattern "$port" "dumbproxy" tcp
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 ui_select_components() {
     local choices
     choices=$(whiptail --title "Aegis VPN Toolbox - Выбор" --checklist \
@@ -175,9 +206,9 @@ ui_get_hardening_info() {
         if [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT >= 1 && SSH_PORT <= 65535 )); then
             # Для нового SSH порта проверяем, что он реально свободен уже на этапе ввода.
             # Порт 22 разрешаем, так как обычно его занимает текущий sshd.
-            if [[ "$SSH_PORT" != "22" ]] && ! check_port_free "$SSH_PORT"; then
+            if ! check_port_free "$SSH_PORT" && ! port_in_use_by_pattern "$SSH_PORT" "sshd" tcp; then
                 whiptail --title "Порт занят" --msgbox \
-                    "Порт ${SSH_PORT} уже занят запущенным сервисом. Выберите другой SSH-порт." \
+                    "Порт ${SSH_PORT} уже занят другим сервисом. Выберите другой SSH-порт." \
                     10 70
                 continue
             fi
@@ -309,7 +340,7 @@ ui_get_ports() {
         if [[ "$_ok" == "true" ]]; then
             for (( j=0; j<${#_vars[@]}; j++ )); do
                 local p="${_values[$j]}"
-                if ! check_port_free "$p"; then
+                if ! check_port_free "$p" && ! ui_port_reusable_for_selected_service "${_vars[$j]}" "$p"; then
                     _ok=false
                     _err="Порт ${p} (${_labels[$j]}) уже занят запущенным сервисом.\nВыберите другой порт."
                     break
