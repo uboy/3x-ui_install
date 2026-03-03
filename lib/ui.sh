@@ -173,6 +173,14 @@ ui_get_hardening_info() {
             --inputbox "Новый порт SSH (1-65535, текущий: ${SSH_PORT:-22}):" \
             10 60 "${SSH_PORT:-22}" 3>&1 1>&2 2>&3) || exit 0
         if [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT >= 1 && SSH_PORT <= 65535 )); then
+            # Для нового SSH порта проверяем, что он реально свободен уже на этапе ввода.
+            # Порт 22 разрешаем, так как обычно его занимает текущий sshd.
+            if [[ "$SSH_PORT" != "22" ]] && ! check_port_free "$SSH_PORT"; then
+                whiptail --title "Порт занят" --msgbox \
+                    "Порт ${SSH_PORT} уже занят запущенным сервисом. Выберите другой SSH-порт." \
+                    10 70
+                continue
+            fi
             break
         fi
         whiptail --title "Ошибка" --msgbox "Некорректный порт: '${SSH_PORT}'. Диапазон: 1-65535." 10 60
@@ -292,6 +300,18 @@ ui_get_ports() {
                 if [[ "${_values[$j]}" == "${SSH_PORT:-22}" ]]; then
                     _ok=false
                     _err="Конфликт: порт ${_values[$j]} (${_labels[$j]}) совпадает с портом SSH (${SSH_PORT:-22})."
+                    break
+                fi
+            done
+        fi
+
+        # Check if selected service ports are occupied by running processes
+        if [[ "$_ok" == "true" ]]; then
+            for (( j=0; j<${#_vars[@]}; j++ )); do
+                local p="${_values[$j]}"
+                if ! check_port_free "$p"; then
+                    _ok=false
+                    _err="Порт ${p} (${_labels[$j]}) уже занят запущенным сервисом.\nВыберите другой порт."
                     break
                 fi
             done
