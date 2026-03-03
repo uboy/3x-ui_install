@@ -393,7 +393,12 @@ ui_final_report() {
     # Создаем чистую версию без ANSI кодов для whiptail
     plain_report=$(printf '%s' "$report" | sed 's/\x1b\[[0-9;]*m//g')
 
-    whiptail --title "Aegis VPN Toolbox - Итоги" --msgbox "$plain_report" 28 85
+    local _rows _cols
+    _rows=$(( $(tput lines 2>/dev/null || echo 24) - 4 ))
+    _cols=$(( $(tput cols  2>/dev/null || echo 80) - 4 ))
+    (( _rows < 20 )) && _rows=20
+    (( _cols < 70 )) && _cols=70
+    whiptail --title "Aegis VPN Toolbox - Итоги" --scrolltext --msgbox "$plain_report" "$_rows" "$_cols"
     clear
     printf '%b' "$report"
 }
