@@ -35,7 +35,8 @@ module_dumbproxy_install() {
     local download_url
     download_url=$(curl -sS --max-time 15 \
         "https://api.github.com/repos/SenseUnit/dumbproxy/releases/latest" \
-        | jq -r ".assets[] | select(.name | test(\"linux_${go_arch}\\.tar\\.gz\$\")) | .browser_download_url")
+        | jq -r --arg sfx "linux_${go_arch}.tar.gz" \
+            '.assets[] | select(.name | endswith($sfx)) | .browser_download_url')
 
     if [[ -z "$download_url" || "$download_url" == "null" ]]; then
         error "Не удалось получить URL загрузки dumbproxy с GitHub API"

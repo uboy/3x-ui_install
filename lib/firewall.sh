@@ -66,18 +66,26 @@ EOF
         sed -i "/^\*nat/,/^COMMIT/ s|^COMMIT|${rule_escaped}\nCOMMIT|" /etc/ufw/before.rules
     fi
 
-    # 4. При наличии Docker сохраняем его правило маскарадинга.
-    # ufw enable/reload сбрасывает nat-таблицу через iptables-restore,
-    # что удаляет правило, которое Docker добавил при запуске контейнера.
-    # Без него контейнеры (включая DockOVPN) теряют выход в интернет.
-    if ip link show docker0 &>/dev/null; then
-        local docker_rule="-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE"
-        if ! grep -Fq -- "$docker_rule" /etc/ufw/before.rules; then
-            log "Добавление MASQUERADE для Docker bridge (172.17.0.0/16)..."
-            local docker_rule_escaped
-            docker_rule_escaped=$(printf '%s' "$docker_rule" | sed 's/[|&\\/]/\\&/g')
-            sed -i "/^\*nat/,/^COMMIT/ s|^COMMIT|${docker_rule_escaped}\nCOMMIT|" /etc/ufw/before.rules
-        fi
+    # 4. При наличии Docker сохраняем правила маскарадинга для всех bridge-сетей.
+    # ufw enable/reload сбрасывает nat-таблицу через iptables-restore, что удаляет
+    # правила, добавленные Docker при старте контейнеров. Перечисляем все бриджи:
+    # docker0 (дефолтная сеть) и br-XXXXXXXXXXXX (compose-сети, напр. DockOVPN).
+    if command -v docker &>/dev/null; then
+        local _iface _subnet _docker_rule _rule_esc
+        while IFS= read -r _iface; do
+            [[ -z "$_iface" ]] && continue
+            _subnet=$(ip -4 addr show dev "$_iface" 2>/dev/null \
+                      | grep -oP '(?<=inet )[\d.]+/\d+' | head -n 1)
+            [[ -z "$_subnet" ]] && continue
+            is_valid_cidr "$_subnet" || continue
+            _docker_rule="-A POSTROUTING -s ${_subnet} ! -o ${_iface} -j MASQUERADE"
+            if ! grep -Fq -- "$_docker_rule" /etc/ufw/before.rules; then
+                log "Добавление MASQUERADE для Docker bridge ${_iface} (${_subnet})..."
+                _rule_esc=$(printf '%s' "$_docker_rule" | sed 's/[|&\\/]/\\&/g')
+                sed -i "/^\*nat/,/^COMMIT/ s|^COMMIT|${_rule_esc}\nCOMMIT|" /etc/ufw/before.rules
+            fi
+        done < <(ip link show \
+                 | grep -oP '^[0-9]+:\s+\K(docker0|br-[a-f0-9]+)(?=:)')
     fi
 
     success "Конфигурация NAT обновлена."

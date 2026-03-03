@@ -97,13 +97,15 @@ EOF
     fi
     chmod 600 "$ovpn_out"
 
-    # DockOVPN v1.14 не добавляет redirect-gateway в клиентский конфиг.
-    # Без него Windows/Linux клиент подключается, но НЕ меняет default route —
-    # интернет-трафик идёт мимо VPN. Вставляем недостающие директивы.
-    if ! grep -q "redirect-gateway" "$ovpn_out"; then
-        log "Добавление redirect-gateway и DNS в .ovpn..."
-        sed -i '/^<ca>/i redirect-gateway def1 bypass-dhcp\ndhcp-option DNS 8.8.8.8' "$ovpn_out"
-    fi
+    # DockOVPN может включить голый 'redirect-gateway' без флагов.
+    # На Windows эта директива конфликтует с def1 bypass-dhcp версией:
+    # клиент подключается, но маршрут не меняется → интернет не работает.
+    # Удаляем голый вариант и гарантируем наличие правильного.
+    sed -i '/^redirect-gateway[[:space:]]*$/d' "$ovpn_out"
+    grep -q "redirect-gateway def1" "$ovpn_out" || \
+        sed -i '/^<ca>/i redirect-gateway def1 bypass-dhcp' "$ovpn_out"
+    grep -q "dhcp-option DNS" "$ovpn_out" || \
+        sed -i '/^<ca>/i dhcp-option DNS 8.8.8.8' "$ovpn_out"
 
     if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
         cp "$ovpn_out" "/home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
