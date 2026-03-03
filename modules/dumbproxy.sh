@@ -58,10 +58,9 @@ module_dumbproxy_install() {
     curl -fsSL --max-time 60 "$download_url" -o /usr/local/bin/dumbproxy
     chmod 755 /usr/local/bin/dumbproxy
 
-    # htpasswd-файл для basic auth (bcrypt)
-    apt-get install -y --no-install-recommends apache2-utils
+    # Файл паролей для basicfile auth
     mkdir -p /etc/dumbproxy
-    htpasswd -nbBC 10 "$dp_user" "$dp_pass" > /etc/dumbproxy/passwd
+    dumbproxy -passwd /etc/dumbproxy/passwd "$dp_user" "$dp_pass"
     chmod 640 /etc/dumbproxy/passwd
 
     # TLS: использовать существующий Let's Encrypt сертификат если есть
@@ -82,7 +81,7 @@ Description=Dumbproxy HTTP/HTTPS Proxy
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/dumbproxy -bind-address :${dp_port} -auth htpasswd:///etc/dumbproxy/passwd ${tls_args}
+ExecStart=/usr/local/bin/dumbproxy -bind-address :${dp_port} -auth 'basicfile://?path=/etc/dumbproxy/passwd' ${tls_args}
 Restart=on-failure
 RestartSec=5
 User=nobody
