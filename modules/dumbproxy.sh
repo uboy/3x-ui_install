@@ -58,9 +58,15 @@ module_dumbproxy_install() {
     curl -fsSL --max-time 60 "$download_url" -o /usr/local/bin/dumbproxy
     chmod 755 /usr/local/bin/dumbproxy
 
+    # Выделенный системный пользователь (убирает предупреждение systemd про nobody)
+    if ! id _dumbproxy &>/dev/null; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin _dumbproxy
+    fi
+
     # Файл паролей для basicfile auth
     mkdir -p /etc/dumbproxy
     dumbproxy -passwd /etc/dumbproxy/passwd "$dp_user" "$dp_pass"
+    chown root:_dumbproxy /etc/dumbproxy/passwd
     chmod 640 /etc/dumbproxy/passwd
 
     # TLS: использовать существующий Let's Encrypt сертификат если есть
@@ -84,8 +90,8 @@ After=network.target
 ExecStart=/usr/local/bin/dumbproxy -bind-address :${dp_port} -auth 'basicfile://?path=/etc/dumbproxy/passwd' ${tls_args}
 Restart=on-failure
 RestartSec=5
-User=nobody
-Group=nogroup
+User=_dumbproxy
+Group=_dumbproxy
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
