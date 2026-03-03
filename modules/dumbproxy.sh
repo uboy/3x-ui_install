@@ -69,13 +69,32 @@ module_dumbproxy_install() {
     chown root:_dumbproxy /etc/dumbproxy/passwd
     chmod 640 /etc/dumbproxy/passwd
 
-    # TLS: использовать существующий Let's Encrypt сертификат если есть
+    # TLS: использовать существующий Let's Encrypt сертификат если есть.
+    # _dumbproxy не имеет доступа к /etc/letsencrypt/archive/ (root:root 700),
+    # поэтому копируем сертификаты в /etc/dumbproxy/ с нужными правами.
     local cert_path="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
     local key_path="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
     local tls_args=""
     if [[ -f "$cert_path" && -f "$key_path" ]]; then
-        tls_args="-cert ${cert_path} -key ${key_path}"
-        log "TLS включён (сертификат: ${cert_path})"
+        cp "$cert_path" /etc/dumbproxy/fullchain.pem
+        cp "$key_path"  /etc/dumbproxy/privkey.pem
+        chown root:_dumbproxy /etc/dumbproxy/fullchain.pem /etc/dumbproxy/privkey.pem
+        chmod 640 /etc/dumbproxy/fullchain.pem /etc/dumbproxy/privkey.pem
+        tls_args="-cert /etc/dumbproxy/fullchain.pem -key /etc/dumbproxy/privkey.pem"
+        log "TLS включён (сертификат скопирован из ${cert_path})"
+
+        # Deploy hook: обновляем копию при автопродлении certbot
+        mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+        cat > /etc/letsencrypt/renewal-hooks/deploy/dumbproxy <<'HOOK'
+#!/usr/bin/env bash
+cert_dir="/etc/letsencrypt/live/${RENEWED_DOMAINS%% *}"
+cp "${cert_dir}/fullchain.pem" /etc/dumbproxy/fullchain.pem
+cp "${cert_dir}/privkey.pem"   /etc/dumbproxy/privkey.pem
+chown root:_dumbproxy /etc/dumbproxy/fullchain.pem /etc/dumbproxy/privkey.pem
+chmod 640 /etc/dumbproxy/fullchain.pem /etc/dumbproxy/privkey.pem
+systemctl restart dumbproxy
+HOOK
+        chmod +x /etc/letsencrypt/renewal-hooks/deploy/dumbproxy
     else
         warn "TLS сертификат не найден — dumbproxy запускается без TLS (HTTP-only)."
     fi
