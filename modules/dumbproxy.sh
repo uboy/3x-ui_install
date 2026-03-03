@@ -42,23 +42,21 @@ module_dumbproxy_install() {
         return 1
     fi
 
+    # Assets are plain binaries: dumbproxy.linux-amd64 (no tarball)
     download_url=$(echo "$api_response" \
-        | jq -r --arg sfx "linux_${go_arch}.tar.gz" \
+        | jq -r --arg sfx "linux-${go_arch}" \
             '.assets[] | select(.name | endswith($sfx)) | .browser_download_url' \
             2>/dev/null || true)
 
     if [[ -z "$download_url" || "$download_url" == "null" ]]; then
         error "Не удалось получить URL загрузки dumbproxy с GitHub API"
-        log "Ответ API: $(echo "$api_response" | head -c 500)"
+        log "Ответ API: $(echo "$api_response" | jq -r '[.assets[].name] | @json' 2>/dev/null || echo "$api_response" | head -c 500)"
         return 1
     fi
 
-    local tmp_dir
-    tmp_dir=$(mktemp -d -p /root)
     log "Загрузка: ${download_url}"
-    curl -fsSL --max-time 60 "$download_url" | tar -xz -C "$tmp_dir"
-    install -m 755 "${tmp_dir}/dumbproxy" /usr/local/bin/dumbproxy
-    rm -rf "$tmp_dir"
+    curl -fsSL --max-time 60 "$download_url" -o /usr/local/bin/dumbproxy
+    chmod 755 /usr/local/bin/dumbproxy
 
     # htpasswd-файл для basic auth (bcrypt)
     apt-get install -y --no-install-recommends apache2-utils
