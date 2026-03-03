@@ -31,17 +31,26 @@ module_xui_install() {
     PANEL_ADMIN_USER="$new_user"
     PANEL_ADMIN_PASS="$new_pass"
 
-    # Генерация конфига Docker Compose (без credentials — ставятся через API после старта)
-    cat > "${PANEL_DIR}/docker-compose.yml" <<'EOF'
+    local panel_bind_host="127.0.0.1"
+    if [[ "${EXPOSE_PANEL_PUBLIC:-false}" == "true" && "${INSTALL_HARDENING:-false}" != "true" ]]; then
+        panel_bind_host="0.0.0.0"
+    fi
+
+    # Явно задаем порты контейнера:
+    # - панель: host:${PORT_XUI_PANEL} -> container:2053
+    # - Reality: host:${PORT_XUI_REALITY} -> container:${PORT_XUI_REALITY}
+    cat > "${PANEL_DIR}/docker-compose.yml" <<EOF
 services:
   3x-ui:
     image: ghcr.io/mhsanaei/3x-ui:latest
     container_name: 3x-ui
+    ports:
+      - "${panel_bind_host}:${PORT_XUI_PANEL:-2053}:2053/tcp"
+      - "0.0.0.0:${PORT_XUI_REALITY:-443}:${PORT_XUI_REALITY:-443}/tcp"
     volumes:
       - ./db:/etc/x-ui
       - ./cert:/root/cert
     restart: unless-stopped
-    network_mode: host
 EOF
 
     ( cd "$PANEL_DIR" && docker compose up -d )

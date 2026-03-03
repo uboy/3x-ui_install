@@ -114,11 +114,20 @@ EOF
         log "Копия .ovpn: /home/${NEW_USER}/${VPN_USER:-vpnuser}.ovpn"
     fi
 
-    # DockOVPN работает в Docker: VPN-подсеть (10.8.0.0/24) находится внутри
-    # контейнера и HOST её не видит напрямую. NAT для 10.8.0.x делает сам
-    # контейнер (10.8.0.x → 172.17.0.2), а NAT для Docker bridge добавляется
-    # автоматически через firewall_configure_nat при установке других модулей
-    # или при наличии docker0. Здесь нужно только открыть порт.
+    # Явно сохраняем MASQUERADE для docker bridge DockOVPN в /etc/ufw/before.rules.
+    # Это защищает от кейса, когда ufw enable/reload очищает nat-таблицу и после
+    # подключения клиент OpenVPN остается без выхода в интернет.
+    local _ovpn_net _ovpn_subnet
+    _ovpn_net=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' dockovpn 2>/dev/null || true)
+    if [[ -n "$_ovpn_net" ]]; then
+        _ovpn_subnet=$(docker network inspect "$_ovpn_net" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || true)
+    fi
+    if [[ -n "${_ovpn_subnet:-}" ]] && is_valid_cidr "$_ovpn_subnet"; then
+        firewall_configure_nat "$_ovpn_subnet" || warn "Не удалось настроить NAT для OpenVPN subnet ${_ovpn_subnet}"
+    else
+        warn "Не удалось определить subnet DockOVPN для NAT (network=${_ovpn_net:-unknown})."
+    fi
+
     firewall_allow "${ovpn_port}" udp
     success "OpenVPN (DockOVPN) установлен и запущен на порту ${ovpn_port}/UDP."
 

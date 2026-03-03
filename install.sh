@@ -54,6 +54,7 @@ main() {
   INSTALL_OPENCONNECT="false"
   INSTALL_AMNEZIA="false"
   INSTALL_DUMBPROXY="false"
+  INSTALL_HARDENING="false"
   INSTALL_MODE=""
   SSH_PORT=""
   PORT_XUI_PANEL=""
@@ -66,6 +67,8 @@ main() {
   NEW_PASS=""
   PANEL_ADMIN_USER=""
   PANEL_ADMIN_PASS=""
+  EXPOSE_PANEL_PUBLIC=""
+  PANEL_PUBLIC_HOST=""
 
   log "Шаг 1: Проверка ОС и загрузка состояния..."
   module_base_check_os
@@ -82,6 +85,9 @@ main() {
   resolve_var NEW_PASS           ""
   resolve_var PANEL_ADMIN_USER   ""
   resolve_var PANEL_ADMIN_PASS   ""
+  resolve_var INSTALL_HARDENING  "false"
+  resolve_var EXPOSE_PANEL_PUBLIC "false"
+  resolve_var PANEL_PUBLIC_HOST   ""
   resolve_var PORT_XUI_PANEL     "2053"
   resolve_var PORT_XUI_REALITY   "443"
   resolve_var PORT_OPENVPN       "1194"
@@ -101,6 +107,7 @@ main() {
   ui_select_components
   ui_get_basic_info
   ui_get_hardening_info
+  ui_get_panel_exposure_info
   ui_get_ports
 
   log "Шаг 3: Подтверждение и начало установки..."
@@ -108,11 +115,14 @@ main() {
   
   # Проверка конфликтов портов
   declare -A USED_PORTS
-  USED_PORTS["${PORT_XUI_REALITY:-443}"]="3x-ui Reality"
-  USED_PORTS["${PORT_OPENVPN:-1194}"]="OpenVPN"
-  USED_PORTS["${PORT_OPENCONNECT:-4443}"]="OpenConnect"
-  USED_PORTS["${PORT_AMNEZIA:-51820}"]="AmneziaWG"
-  USED_PORTS["${PORT_XUI_PANEL:-2053}"]="3x-ui Panel"
+  [[ "${INSTALL_XUI:-false}" == "true" ]] && {
+    USED_PORTS["${PORT_XUI_REALITY:-443}"]="3x-ui Reality"
+    USED_PORTS["${PORT_XUI_PANEL:-2053}"]="3x-ui Panel"
+  }
+  [[ "${INSTALL_OPENVPN:-false}" == "true" ]] && USED_PORTS["${PORT_OPENVPN:-1194}"]="OpenVPN"
+  [[ "${INSTALL_OPENCONNECT:-false}" == "true" ]] && USED_PORTS["${PORT_OPENCONNECT:-4443}"]="OpenConnect"
+  [[ "${INSTALL_AMNEZIA:-false}" == "true" ]] && USED_PORTS["${PORT_AMNEZIA:-51820}"]="AmneziaWG"
+  [[ "${INSTALL_DUMBPROXY:-false}" == "true" ]] && USED_PORTS["${PORT_DUMBPROXY:-8080}"]="Dumbproxy"
   
   # Если SSH_PORT изменен — проверяем конфликты
   if [[ "${SSH_PORT:-22}" != "22" ]]; then
@@ -132,8 +142,10 @@ main() {
   module_base_install
   firewall_init
   
-  log "Шаг 4: Настройка безопасности..."
-  module_hardening_apply
+  if [[ "${INSTALL_HARDENING:-false}" == "true" ]]; then
+    log "Шаг 4: Настройка безопасности..."
+    module_hardening_apply
+  fi
   
   if [[ "$INSTALL_XUI" == "true" || "$INSTALL_OPENCONNECT" == "true" ]]; then
     log "Шаг 5: Получение сертификатов..."
@@ -156,6 +168,9 @@ main() {
 
   log "Шаг 7: Настройка фаервола..."
   firewall_allow "${SSH_PORT:-22}"
+  if [[ "${INSTALL_XUI:-false}" == "true" && "${EXPOSE_PANEL_PUBLIC:-false}" == "true" && "${INSTALL_HARDENING:-false}" != "true" ]]; then
+    firewall_allow "${PORT_XUI_PANEL:-2053}" tcp
+  fi
   firewall_enable
   
   if [[ "$INSTALL_MODE" == "super-secure" ]]; then

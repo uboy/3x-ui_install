@@ -24,7 +24,8 @@ ui_select_components() {
     "OpenVPN" "Классический OpenVPN сервер" OFF \
     "OpenConnect" "Cisco AnyConnect совместимый VPN" OFF \
     "AmneziaWG" "AmneziaWG (обфусцированный WireGuard)" OFF \
-    "Dumbproxy" "HTTP/HTTPS прокси-сервер с авторизацией" OFF 3>&1 1>&2 2>&3) || exit 0
+    "Dumbproxy" "HTTP/HTTPS прокси-сервер с авторизацией" OFF \
+    "Hardening" "Усиление безопасности SSH/Fail2Ban/UFW" ON 3>&1 1>&2 2>&3) || exit 0
 
     # Сбрасываем флаги
     INSTALL_XUI="false"
@@ -32,6 +33,7 @@ ui_select_components() {
     INSTALL_OPENCONNECT="false"
     INSTALL_AMNEZIA="false"
     INSTALL_DUMBPROXY="false"
+    INSTALL_HARDENING="false"
 
     for choice in $choices; do
         case $choice in
@@ -40,11 +42,12 @@ ui_select_components() {
             "\"OpenConnect\"") INSTALL_OPENCONNECT="true" ;;
             "\"AmneziaWG\"") INSTALL_AMNEZIA="true" ;;
             "\"Dumbproxy\"") INSTALL_DUMBPROXY="true" ;;
+            "\"Hardening\"") INSTALL_HARDENING="true" ;;
         esac
     done
 
     # Если ничего не выбрано - выходим
-    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_AMNEZIA" == "false" && "$INSTALL_DUMBPROXY" == "false" ]]; then
+    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_AMNEZIA" == "false" && "$INSTALL_DUMBPROXY" == "false" && "$INSTALL_HARDENING" == "false" ]]; then
         whiptail --title "Ошибка" --msgbox "Ничего не выбрано. Установка отменена." 10 60
         exit 0
     fi
@@ -114,81 +117,90 @@ ui_get_basic_info() {
         whiptail --title "Ошибка" --msgbox "Некорректный CIDR: '${_bad_cidr}'\nПример: 10.0.0.0/8" 10 60
     done
 
+    if [[ "${INSTALL_XUI:-false}" == "true" ]]; then
+        while true; do
+            PANEL_PUBLIC_HOST=$(whiptail --title "Адрес панели 3x-ui" \
+                --inputbox "Введите адрес для подключения к панели (домен/IP).\nПусто = использовать основной DOMAIN (${DOMAIN})." \
+                11 72 "${PANEL_PUBLIC_HOST:-$DOMAIN}" 3>&1 1>&2 2>&3) || exit 0
+            [[ -z "${PANEL_PUBLIC_HOST:-}" ]] && PANEL_PUBLIC_HOST="$DOMAIN"
+            if is_valid_domain "$PANEL_PUBLIC_HOST"; then
+                break
+            fi
+            whiptail --title "Ошибка" --msgbox "Некорректный адрес панели: '${PANEL_PUBLIC_HOST}'\nПример: panel.example.com или 1.2.3.4" 10 70
+        done
+    fi
+
     save_install_state
 }
 
 ui_get_hardening_info() {
-    # Outer loop: cancel on any sub-dialog brings back to the yes/no question
-    while true; do
-        if ! whiptail --title "Харденинг системы" --yesno \
-            "Включить усиленную защиту сервера?\n\n  • Создание нового sudo-пользователя\n  • Запрет SSH-логина под root\n  • Смена порта SSH\n\nРекомендуется для production-серверов." \
-            15 70; then
-            INSTALL_MODE="simple"
-            return 0
-        fi
-        INSTALL_MODE="super-secure"
-
-        # --- Новый администратор ---
-        local _user _user_ok=false
-        while true; do
-            if ! _user=$(whiptail --title "Новый sudo-пользователь" \
-                --inputbox "Имя нового администратора:" \
-                10 60 "${NEW_USER:-vpnadmin}" 3>&1 1>&2 2>&3); then
-                break  # Cancel → back to yes/no
-            fi
-            if is_valid_username "$_user"; then
-                NEW_USER="$_user"
-                _user_ok=true
-                break
-            fi
-            whiptail --title "Ошибка" --msgbox \
-                "Некорректное имя: '${_user}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." \
-                12 60
-        done
-        [[ "$_user_ok" == "true" ]] || continue
-
-        # --- Пароль администратора ---
-        local _pass _pass_ok=false
-        while true; do
-            if ! _pass=$(whiptail --title "Пароль администратора" \
-                --passwordbox "Пароль для ${NEW_USER} (мин. 12 символов, пусто = автогенерация):" \
-                10 60 3>&1 1>&2 2>&3); then
-                break  # Cancel → back to yes/no
-            fi
-            if [[ -z "${_pass:-}" ]]; then
-                if [[ -z "${NEW_PASS:-}" ]]; then
-                    NEW_PASS=$(generate_strong_secret)
-                fi
-                _pass_ok=true
-                break
-            elif (( ${#_pass} >= 12 )); then
-                NEW_PASS="$_pass"
-                _pass_ok=true
-                break
-            fi
-            whiptail --title "Ошибка" --msgbox "Пароль слишком короткий. Минимум 12 символов." 10 60
-        done
-        [[ "$_pass_ok" == "true" ]] || continue
-
-        # --- Порт SSH ---
-        local _port _port_ok=false
-        while true; do
-            if ! _port=$(whiptail --title "Порт SSH" \
-                --inputbox "Новый порт SSH (1-65535, текущий: ${SSH_PORT:-22}):" \
-                10 60 "${SSH_PORT:-22}" 3>&1 1>&2 2>&3); then
-                break  # Cancel → back to yes/no
-            fi
-            if [[ "$_port" =~ ^[0-9]+$ ]] && (( _port >= 1 && _port <= 65535 )); then
-                SSH_PORT="$_port"
-                _port_ok=true
-                break
-            fi
-            whiptail --title "Ошибка" --msgbox "Некорректный порт: '${_port}'. Диапазон: 1-65535." 10 60
-        done
-        [[ "$_port_ok" == "true" ]] || continue
-
+    if [[ "${INSTALL_HARDENING:-false}" != "true" ]]; then
+        INSTALL_MODE="simple"
         return 0
+    fi
+
+    INSTALL_MODE="super-secure"
+
+    while true; do
+        NEW_USER=$(whiptail --title "Новый sudo-пользователь" \
+            --inputbox "Имя нового администратора:" \
+            10 60 "${NEW_USER:-vpnadmin}" 3>&1 1>&2 2>&3) || exit 0
+        if is_valid_username "$NEW_USER"; then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox \
+            "Некорректное имя: '${NEW_USER}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." \
+            12 60
     done
+
+    while true; do
+        local _pass
+        _pass=$(whiptail --title "Пароль администратора" \
+            --passwordbox "Пароль для ${NEW_USER} (мин. 12 символов, пусто = автогенерация):" \
+            10 60 3>&1 1>&2 2>&3) || exit 0
+        if [[ -z "${_pass:-}" ]]; then
+            [[ -z "${NEW_PASS:-}" ]] && NEW_PASS=$(generate_strong_secret)
+            break
+        elif (( ${#_pass} >= 12 )); then
+            NEW_PASS="$_pass"
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox "Пароль слишком короткий. Минимум 12 символов." 10 60
+    done
+
+    while true; do
+        SSH_PORT=$(whiptail --title "Порт SSH" \
+            --inputbox "Новый порт SSH (1-65535, текущий: ${SSH_PORT:-22}):" \
+            10 60 "${SSH_PORT:-22}" 3>&1 1>&2 2>&3) || exit 0
+        if [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT >= 1 && SSH_PORT <= 65535 )); then
+            break
+        fi
+        whiptail --title "Ошибка" --msgbox "Некорректный порт: '${SSH_PORT}'. Диапазон: 1-65535." 10 60
+    done
+
+    save_install_state
+}
+
+ui_get_panel_exposure_info() {
+    [[ "${INSTALL_XUI:-false}" == "true" ]] || return 0
+
+    if [[ "${INSTALL_HARDENING:-false}" == "true" ]]; then
+        EXPOSE_PANEL_PUBLIC="false"
+        whiptail --title "Публикация панели 3x-ui" --msgbox \
+            "Hardening включен: порт панели будет закрыт снаружи.\nИспользуйте SSH-туннель для доступа к 3x-ui." \
+            11 72
+        save_install_state
+        return 0
+    fi
+
+    if whiptail --title "Публикация панели 3x-ui" --yesno \
+        "Открыть порт панели 3x-ui наружу?\n\nYes: панель будет доступна из интернета.\nNo: порт закрыт, доступ только через SSH-туннель." \
+        13 74; then
+        EXPOSE_PANEL_PUBLIC="true"
+    else
+        EXPOSE_PANEL_PUBLIC="false"
+    fi
+    save_install_state
 }
 
 ui_get_ports() {
@@ -326,8 +338,24 @@ ui_final_report() {
     report="${BOLD}Aegis VPN Toolbox: Установка завершена успешно!${NC}\n"
     report="${report}==============================================\n\n"
 
-    report="${report}${BLUE}${BOLD}--- ОБЩИЕ ДАННЫЕ СЕРВЕРА ---${NC}\n"
+    report="${report}${BLUE}${BOLD}--- ПАРАМЕТРЫ УСТАНОВКИ (ВВОД ПОЛЬЗОВАТЕЛЯ) ---${NC}\n"
     report="${report}Домен/IP: ${DOMAIN}\n"
+    report="${report}Email: ${EMAIL:-не задан}\n"
+    report="${report}VPN пользователь: ${VPN_USER:-vpnuser}\n"
+    report="${report}Исключения маршрутов: ${VPN_EXCLUDE_ROUTES:-не заданы}\n"
+    report="${report}Hardening: ${INSTALL_HARDENING:-false}\n"
+    report="${report}Режим: ${INSTALL_MODE:-simple}\n"
+    report="${report}Публикация панели: ${EXPOSE_PANEL_PUBLIC:-false}\n"
+    report="${report}Адрес панели: ${PANEL_PUBLIC_HOST:-$DOMAIN}\n"
+    report="${report}Порт SSH: ${SSH_PORT:-22}\n"
+    report="${report}Порт панели 3x-ui: ${PORT_XUI_PANEL:-2053}\n"
+    report="${report}Порт VLESS Reality: ${PORT_XUI_REALITY:-443}\n"
+    report="${report}Порт OpenVPN: ${PORT_OPENVPN:-1194}\n"
+    report="${report}Порт OpenConnect: ${PORT_OPENCONNECT:-4443}\n"
+    report="${report}Порт AmneziaWG: ${PORT_AMNEZIA:-51820}\n"
+    report="${report}Порт Dumbproxy: ${PORT_DUMBPROXY:-8080}\n\n"
+
+    report="${report}${BLUE}${BOLD}--- ОБЩИЕ ДАННЫЕ СЕРВЕРА ---${NC}\n"
     if [[ "${INSTALL_MODE:-}" == "super-secure" ]]; then
         report="${report}SSH Пользователь: ${NEW_USER:-root}\n"
         report="${report}SSH Пароль: ${NEW_PASS:-unchanged}\n"
@@ -337,10 +365,19 @@ ui_final_report() {
 
     if [[ "$INSTALL_XUI" == "true" ]]; then
         report="${report}${BLUE}${BOLD}--- 3x-ui (Xray Panel) ---${NC}\n"
-        report="${report}Панель управления: http://${DOMAIN}:${PORT_XUI_PANEL:-2053}\n"
+        report="${report}Панель управления: http://${PANEL_PUBLIC_HOST:-$DOMAIN}:${PORT_XUI_PANEL:-2053}\n"
+        report="${report}Публичный доступ: ${EXPOSE_PANEL_PUBLIC:-false}\n"
         report="${report}Логин: ${PANEL_ADMIN_USER:-admin}\n"
         report="${report}Пароль: ${PANEL_ADMIN_PASS:-admin}\n"
-        report="${report}VLESS Reality порт: ${PORT_XUI_REALITY:-443}\n\n"
+        report="${report}VLESS Reality порт: ${PORT_XUI_REALITY:-443}\n"
+        if [[ "${EXPOSE_PANEL_PUBLIC:-false}" != "true" ]]; then
+            local tunnel_user tunnel_port
+            tunnel_user="${NEW_USER:-root}"
+            tunnel_port="${SSH_PORT:-22}"
+            report="${report}SSH-туннель (пример):\n"
+            report="${report}  ssh -N -L ${PORT_XUI_PANEL:-2053}:127.0.0.1:${PORT_XUI_PANEL:-2053} ${tunnel_user}@${DOMAIN} -p ${tunnel_port}\n"
+        fi
+        report="${report}\n"
     elif [[ "$INSTALL_XUI" == "skipped" ]]; then
         report="${report}${YELLOW}--- 3x-ui (Пропущено) ---${NC}\n\n"
     fi
