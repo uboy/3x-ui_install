@@ -31,37 +31,33 @@ module_xui_install() {
     PANEL_ADMIN_USER="$new_user"
     PANEL_ADMIN_PASS="$new_pass"
 
-    local panel_bind_host="127.0.0.1"
-    if [[ "${EXPOSE_PANEL_PUBLIC:-false}" == "true" && "${INSTALL_HARDENING:-false}" != "true" ]]; then
-        panel_bind_host="0.0.0.0"
-    fi
-
-    # Явно задаем порты контейнера:
-    # - панель: host:${PORT_XUI_PANEL} -> container:2053
-    # - Reality: host:${PORT_XUI_REALITY} -> container:${PORT_XUI_REALITY}
-    cat > "${PANEL_DIR}/docker-compose.yml" <<EOF
+    # Возвращаем шаблонную схему 3x-ui (host network), чтобы не ломать
+    # совместимость и текущую модель инбаундов.
+    cat > "${PANEL_DIR}/docker-compose.yml" <<'EOF'
 services:
   3x-ui:
     image: ghcr.io/mhsanaei/3x-ui:latest
     container_name: 3x-ui
-    ports:
-      - "${panel_bind_host}:${PORT_XUI_PANEL:-2053}:2053/tcp"
-      - "0.0.0.0:${PORT_XUI_REALITY:-443}:${PORT_XUI_REALITY:-443}/tcp"
     volumes:
       - ./db:/etc/x-ui
       - ./cert:/root/cert
     restart: unless-stopped
+    network_mode: host
 EOF
 
     ( cd "$PANEL_DIR" && docker compose up -d )
 
-    log "Ожидание готовности панели (макс. 120 сек)..."
+    local target_panel_port="${PORT_XUI_PANEL:-2053}"
+    local default_panel_port="2053"
+    local panel_ready=false
+
+    log "Ожидание готовности панели на порту ${target_panel_port} (макс. 120 сек)..."
     local attempts=0
     while (( attempts < 60 )); do
-        if curl -sf --max-time 2 "http://127.0.0.1:${PORT_XUI_PANEL:-2053}/" >/dev/null 2>&1; then
+        if curl -sf --max-time 2 "http://127.0.0.1:${target_panel_port}/" >/dev/null 2>&1; then
+            panel_ready=true
             break
         fi
-        # Быстрый выход если контейнер упал
         local cstate
         cstate=$(docker inspect --format '{{.State.Status}}' 3x-ui 2>/dev/null || true)
         if [[ "$cstate" == "exited" || "$cstate" == "dead" ]]; then
@@ -73,9 +69,35 @@ EOF
         [[ $(( attempts % 10 )) -eq 0 ]] && log "Ожидание... (попытка ${attempts}/60)"
         sleep 2
     done
-    if (( attempts >= 60 )); then
-        error "Панель 3x-ui не ответила за 120 секунд. Логи:"
+
+    if [[ "$panel_ready" != "true" && "$target_panel_port" != "$default_panel_port" ]]; then
+        log "Панель не отвечает на ${target_panel_port}; пробуем дефолтный порт ${default_panel_port}..."
+        if curl -sf --max-time 3 "http://127.0.0.1:${default_panel_port}/" >/dev/null 2>&1; then
+            log "Переключение порта панели 3x-ui на ${target_panel_port}..."
+            if docker exec 3x-ui x-ui setting -port "${target_panel_port}" >/dev/null 2>&1 \
+               || docker exec 3x-ui /usr/local/x-ui/x-ui setting -port "${target_panel_port}" >/dev/null 2>&1; then
+                docker restart 3x-ui >/dev/null 2>&1 || true
+                attempts=0
+                while (( attempts < 60 )); do
+                    if curl -sf --max-time 2 "http://127.0.0.1:${target_panel_port}/" >/dev/null 2>&1; then
+                        panel_ready=true
+                        break
+                    fi
+                    (( attempts++ )) || true
+                    sleep 2
+                done
+            else
+                warn "Не удалось автоматически применить порт панели ${target_panel_port}; панель осталась на ${default_panel_port}."
+            fi
+        fi
+    fi
+
+    if [[ "$panel_ready" != "true" ]]; then
+        error "Панель 3x-ui не ответила на порту ${target_panel_port}. Логи:"
         docker logs 3x-ui --tail=30
+        if [[ "$target_panel_port" != "$default_panel_port" ]]; then
+            warn "Проверьте доступность дефолтного порта панели: ${default_panel_port}"
+        fi
         return 1
     fi
 }
@@ -113,14 +135,14 @@ module_xui_configure() {
         local client_id
         client_id=$(generate_uuid)
 
-        # Generate valid X25519 key pair for VLESS Reality via xray binary in container
-        local x25519_out pk sid
-        x25519_out=$(docker exec 3x-ui xray x25519 2>/dev/null) || x25519_out=""
-        if [[ -n "$x25519_out" ]]; then
-            pk=$(printf '%s' "$x25519_out" | awk '/Private key:/{print $NF}')
-        else
-            warn "xray x25519 недоступен, используем случайный ключ (Reality может не работать)"
-            pk=$(generate_random_fixed 43 'a-zA-Z0-9_-' false)
+        # Генерируем валидный X25519 private key для Reality.
+        # Если ключ получить не удалось, inbound не создаем (чтобы не ломать Xray).
+        local x25519_out reality_priv_key sid
+        x25519_out=$(docker exec 3x-ui sh -lc 'xray x25519 2>/dev/null || /usr/local/x-ui/bin/xray x25519 2>/dev/null' 2>/dev/null || true)
+        reality_priv_key=$(printf '%s' "$x25519_out" | sed -n 's/.*Private key:[[:space:]]*//p' | head -n1)
+        if [[ -z "${reality_priv_key:-}" ]]; then
+            warn "Не удалось сгенерировать валидный Reality privateKey через xray x25519. Авто-создание inbound пропущено."
+            return 0
         fi
         sid=$(generate_random_fixed 8 '0-9a-f' true)
 
@@ -128,9 +150,9 @@ module_xui_configure() {
         settings=$(jq -cn \
             --arg id "$client_id" \
             --arg email "${VPN_USER:-vpn}@${DOMAIN}" \
-            '{clients:[{id:$id,email:$email,totalGB:0,expiryTime:0,enable:true}]}')
+            '{decryption:"none",clients:[{id:$id,email:$email,totalGB:0,expiryTime:0,enable:true}]}')
         stream_settings=$(jq -cn \
-            --arg pk "$pk" \
+            --arg pk "$reality_priv_key" \
             --arg sid "$sid" \
             '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"google.com:443",serverNames:["google.com"],privateKey:$pk,shortIds:[$sid]}}')
 
