@@ -168,6 +168,9 @@ main() {
 
   log "Шаг 7: Настройка фаервола..."
   firewall_allow "${SSH_PORT:-22}"
+  if [[ "${INSTALL_XUI:-false}" == "true" ]]; then
+    firewall_allow "${PORT_XUI_REALITY:-443}" tcp
+  fi
   if [[ "${INSTALL_XUI:-false}" == "true" && "${EXPOSE_PANEL_PUBLIC:-false}" == "true" && "${INSTALL_HARDENING:-false}" != "true" ]]; then
     firewall_allow "${PORT_XUI_PANEL:-2053}" tcp
   fi
