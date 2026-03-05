@@ -57,19 +57,24 @@ ca-cert = $cert_path
 # Лимиты и тайм-ауты
 isolate-workers = true
 max-clients = 64
-max-same-clients = 2
-keepalive = 32400
-dpd = 90
-mobile-dpd = 1800
+max-same-clients = 5
+keepalive = 30
+dpd = 60
+mobile-dpd = 300
+switch-to-tcp-timeout = 25
 try-mtu-discovery = true
+mtu = 1320
 idle-timeout = 1200
 mobile-idle-timeout = 2400
+compression = true
+no-compress-limit = 256
 
 # Настройки IP
 cert-user-oid = 2.5.4.3
 default-domain = $DOMAIN
 ipv4-network = 192.168.10.0
 ipv4-netmask = 255.255.255.0
+tunnel-all-dns = true
 dns = 8.8.8.8
 dns = 1.1.1.1
 
@@ -94,6 +99,8 @@ ping-leases = false
 # Совместимость
 cisco-client-compat = true
 dtls-psk = true
+dtls-legacy = true
+tls-priorities = "NORMAL:%SERVER_PRECEDENCE:%COMPAT:-RSA:-VERS-SSL3.0:-ARCFOUR-128"
 route = default
 EOF
 
