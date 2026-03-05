@@ -62,11 +62,11 @@ keepalive = 30
 dpd = 60
 mobile-dpd = 300
 switch-to-tcp-timeout = 25
-try-mtu-discovery = true
-mtu = 1320
+try-mtu-discovery = false
+mtu = 1200
 idle-timeout = 1200
 mobile-idle-timeout = 2400
-compression = true
+compression = false
 no-compress-limit = 256
 
 # Настройки IP
@@ -116,10 +116,14 @@ EOF
     unset oc_pass
     chmod 600 /etc/ocserv/ocpasswd
     
-    # 5. Сеть (NAT через UFW)
+    # 5. Сеть (NAT через UFW и MSS Clamping)
     firewall_configure_nat "192.168.10.0/24"
     firewall_allow "${PORT_OPENCONNECT:-4443}" tcp
     firewall_allow "${PORT_OPENCONNECT:-4443}" udp
+    
+    # Принудительное ограничение MSS для предотвращения проблем с MTU на роутерах
+    iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -s 192.168.10.0/24 -j TCPMSS --set-mss 1300 || true
+    iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -d 192.168.10.0/24 -j TCPMSS --set-mss 1300 || true
     
     # 6. Запуск и проверка
     log "Запуск сервиса ocserv..."

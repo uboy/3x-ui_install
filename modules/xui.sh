@@ -136,7 +136,6 @@ module_xui_configure() {
         client_id=$(generate_uuid)
 
         # Генерируем валидный X25519 private key для Reality.
-        # Если ключ получить не удалось, inbound не создаем (чтобы не ломать Xray).
         local x25519_out reality_priv_key sid
         x25519_out=$(docker exec 3x-ui sh -lc 'xray x25519 2>/dev/null || /usr/local/x-ui/bin/xray x25519 2>/dev/null' 2>/dev/null || true)
         reality_priv_key=$(printf '%s' "$x25519_out" | sed -n 's/.*Private key:[[:space:]]*//p' | head -n1)
@@ -154,11 +153,14 @@ module_xui_configure() {
         stream_settings=$(jq -cn \
             --arg pk "$reality_priv_key" \
             --arg sid "$sid" \
-            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"www.microsoft.com:443",serverNames:["www.microsoft.com"],privateKey:$pk,shortIds:[$sid]}}')
+            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"www.microsoft.com:443",serverNames:["microsoft.com"],privateKey:$pk,shortIds:[$sid]}}')
 
+        local response
+        firewall_allow "${PORT_XUI_REALITY:-443}"
         if xui_api_add_inbound "Aegis_VLESS_Reality" "${PORT_XUI_REALITY:-443}" "vless" "$settings" "$stream_settings" "$panel_url"; then
             success "Инбаунд Aegis_VLESS_Reality создан на порту ${PORT_XUI_REALITY:-443}."
-            firewall_allow "${PORT_XUI_REALITY:-443}"
+        else
+            warn "Не удалось создать инбаунд через API (возможно, он уже существует или ошибка в параметрах). Проверьте панель вручную."
         fi
     fi
 }
