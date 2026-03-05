@@ -150,11 +150,11 @@ module_xui_configure() {
         settings=$(jq -cn \
             --arg id "$client_id" \
             --arg email "${VPN_USER:-vpn}@${DOMAIN}" \
-            '{decryption:"none",clients:[{id:$id,email:$email,totalGB:0,expiryTime:0,enable:true}]}')
+            '{decryption:"none",clients:[{id:$id,flow:"xtls-rprx-vision",email:$email,totalGB:0,expiryTime:0,enable:true}]}')
         stream_settings=$(jq -cn \
             --arg pk "$reality_priv_key" \
             --arg sid "$sid" \
-            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"google.com:443",serverNames:["google.com"],privateKey:$pk,shortIds:[$sid]}}')
+            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"www.microsoft.com:443",serverNames:["www.microsoft.com"],privateKey:$pk,shortIds:[$sid]}}')
 
         if xui_api_add_inbound "Aegis_VLESS_Reality" "${PORT_XUI_REALITY:-443}" "vless" "$settings" "$stream_settings" "$panel_url"; then
             success "Инбаунд Aegis_VLESS_Reality создан на порту ${PORT_XUI_REALITY:-443}."
