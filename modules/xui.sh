@@ -152,21 +152,25 @@ module_xui_configure() {
         # - REALITY_FLOW (e.g. "", xtls-rprx-vision)
         reality_dest="${REALITY_DEST:-google.com:443}"
         reality_server_name="${REALITY_SERVER_NAME:-google.com}"
-        reality_flow="${REALITY_FLOW:-}"
+        # xtls-rprx-vision — рекомендуемый flow для Reality+TCP: нативный TLS внутри туннеля,
+        # лучшая пропускная способность и стабильность по сравнению с пустым flow.
+        reality_flow="${REALITY_FLOW:-xtls-rprx-vision}"
         settings=$(jq -cn \
             --arg id "$client_id" \
             --arg email "${VPN_USER:-vpn}@${DOMAIN}" \
             --arg flow "$reality_flow" \
             '{decryption:"none",clients:[{id:$id,flow:$flow,email:$email,totalGB:0,expiryTime:0,enable:true}]}')
+        # shortIds содержит сгенерированный ID и пустую строку "" для совместимости
+        # со старыми клиентами, которые не передают shortId при подключении.
         stream_settings=$(jq -cn \
             --arg pk "$reality_priv_key" \
             --arg sid "$sid" \
             --arg rd "$reality_dest" \
             --arg rsn "$reality_server_name" \
-            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:$rd,serverNames:[$rsn],privateKey:$pk,shortIds:[$sid]}}')
+            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:$rd,serverNames:[$rsn],privateKey:$pk,shortIds:[$sid,""]}}')
+
 
         local response
-        firewall_allow "${PORT_XUI_REALITY:-443}"
         if xui_api_add_inbound "Aegis_VLESS_Reality" "${PORT_XUI_REALITY:-443}" "vless" "$settings" "$stream_settings" "$panel_url"; then
             success "Инбаунд Aegis_VLESS_Reality создан на порту ${PORT_XUI_REALITY:-443}."
         else

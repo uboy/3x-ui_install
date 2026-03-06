@@ -94,7 +94,11 @@ EOF
 
     cat >> /etc/ocserv/ocserv.conf <<EOF
 predictable-ips = true
-ping-leases = false
+ping-leases = true
+
+# Ключи TLS: обновление без разрыва соединения
+rekey-time = 86400
+rekey-method = ssl
 
 # Совместимость
 cisco-client-compat = true
@@ -120,10 +124,39 @@ EOF
     firewall_configure_nat "192.168.10.0/24"
     firewall_allow "${PORT_OPENCONNECT:-4443}" tcp
     firewall_allow "${PORT_OPENCONNECT:-4443}" udp
-    
-    # Принудительное ограничение MSS для предотвращения проблем с MTU на роутерах
-    iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -s 192.168.10.0/24 -j TCPMSS --set-mss 1300 || true
-    iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -d 192.168.10.0/24 -j TCPMSS --set-mss 1300 || true
+
+    # MSS Clamping — применяем немедленно и сохраняем в UFW before.rules для персистентности.
+    # --clamp-mss-to-pmtu автоматически выставляет MSS = PMTU - 40, что корректно
+    # для туннельного интерфейса с mtu=1200 (1200-40=1160, а не захардкоженные 1300).
+    iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -s 192.168.10.0/24 -j TCPMSS --clamp-mss-to-pmtu || true
+    iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -d 192.168.10.0/24 -j TCPMSS --clamp-mss-to-pmtu || true
+
+    # Персистентность mangle-правил через UFW before.rules (аналогично блоку *nat).
+    # UFW при ufw enable/reload делает iptables-restore и затирает все ручные правила.
+    if ! grep -q "^\*mangle" /etc/ufw/before.rules; then
+        log "Добавление блока *mangle в UFW before.rules для персистентности MSS clamping..."
+        local temp_mangle
+        temp_mangle="$(mktemp -p /etc/ufw)" || die "mktemp failed in /etc/ufw"
+        local filter_line
+        filter_line=$(grep -n "^\*filter" /etc/ufw/before.rules | head -n 1 | cut -d: -f1)
+        [[ -z "$filter_line" ]] && filter_line=1
+        head -n $((filter_line - 1)) /etc/ufw/before.rules > "$temp_mangle"
+        cat >> "$temp_mangle" <<'MANGLE_EOF'
+*mangle
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A FORWARD -p tcp --tcp-flags SYN,RST SYN -s 192.168.10.0/24 -j TCPMSS --clamp-mss-to-pmtu
+-A FORWARD -p tcp --tcp-flags SYN,RST SYN -d 192.168.10.0/24 -j TCPMSS --clamp-mss-to-pmtu
+COMMIT
+
+MANGLE_EOF
+        tail -n +$filter_line /etc/ufw/before.rules >> "$temp_mangle"
+        mv "$temp_mangle" /etc/ufw/before.rules
+        log "Блок *mangle добавлен в UFW before.rules."
+    fi
     
     # 6. Запуск и проверка
     log "Запуск сервиса ocserv..."

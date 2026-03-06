@@ -9,7 +9,16 @@ _xui_cookie_init() {
     PANEL_COOKIE_FILE="$(mktemp -p /root .3xui-cookie.XXXXXX)"
     chmod 600 "$PANEL_COOKIE_FILE"
     if (( _XUI_COOKIE_TRAP_SET == 0 )); then
-        trap '_xui_cookie_cleanup' EXIT
+        # Сохраняем существующий EXIT trap и добавляем cleanup к нему,
+        # не заменяя — иначе on_exit из install.sh (save_install_state) потеряется.
+        local _prev_trap
+        _prev_trap=$(trap -p EXIT 2>/dev/null | sed -E "s/trap -- '(.*)' EXIT/\\1/")
+        if [[ -n "$_prev_trap" ]]; then
+            # shellcheck disable=SC2064
+            trap "${_prev_trap}; _xui_cookie_cleanup" EXIT
+        else
+            trap '_xui_cookie_cleanup' EXIT
+        fi
         _XUI_COOKIE_TRAP_SET=1
     fi
 }

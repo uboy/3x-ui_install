@@ -52,9 +52,7 @@ ui_select_components() {
     choices=$(whiptail --title "Aegis VPN Toolbox - Выбор" --checklist \
     "Выберите компоненты для установки (Пробел - выбор, Enter - подтверждение):" 20 70 10 \
     "XUI" "3x-ui Panel (Xray/VLESS/Reality)" ON \
-    "OpenVPN" "Классический OpenVPN сервер" OFF \
     "OpenConnect" "Cisco AnyConnect совместимый VPN" OFF \
-    "AmneziaWG" "AmneziaWG (обфусцированный WireGuard)" OFF \
     "Dumbproxy" "HTTP/HTTPS прокси-сервер с авторизацией" OFF \
     "Hardening" "Усиление безопасности SSH/Fail2Ban/UFW" ON 3>&1 1>&2 2>&3) || exit 0
 
@@ -69,16 +67,14 @@ ui_select_components() {
     for choice in $choices; do
         case $choice in
             "\"XUI\"") INSTALL_XUI="true" ;;
-            "\"OpenVPN\"") INSTALL_OPENVPN="true" ;;
             "\"OpenConnect\"") INSTALL_OPENCONNECT="true" ;;
-            "\"AmneziaWG\"") INSTALL_AMNEZIA="true" ;;
             "\"Dumbproxy\"") INSTALL_DUMBPROXY="true" ;;
             "\"Hardening\"") INSTALL_HARDENING="true" ;;
         esac
     done
 
     # Если ничего не выбрано - выходим
-    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_AMNEZIA" == "false" && "$INSTALL_DUMBPROXY" == "false" && "$INSTALL_HARDENING" == "false" ]]; then
+    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_DUMBPROXY" == "false" && "$INSTALL_HARDENING" == "false" ]]; then
         whiptail --title "Ошибка" --msgbox "Ничего не выбрано. Установка отменена." 10 60
         exit 0
     fi
@@ -107,24 +103,26 @@ ui_get_basic_info() {
 
     # VPN_USER — loop until valid
     while true; do
-        VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect/OpenVPN):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3) || exit 0
+        VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3) || exit 0
         if is_valid_username "$VPN_USER"; then
             break
         fi
         whiptail --title "Ошибка" --msgbox "Некорректное имя пользователя: '${VPN_USER}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." 12 60
     done
 
-    # VPN_PASS — enforce minimum 12 chars if entered manually
-    while true; do
-        VPN_PASS=$(whiptail --title "VPN Пароль" --passwordbox "Введите пароль для VPN (оставьте пустым для автогенерации, мин. 12 символов):" 10 60 3>&1 1>&2 2>&3) || exit 0
-        if [[ -z "${VPN_PASS:-}" ]]; then
-            VPN_PASS=$(generate_strong_secret)
-            break
-        elif (( ${#VPN_PASS} >= 12 )); then
-            break
-        fi
-        whiptail --title "Ошибка" --msgbox "Пароль слишком короткий. Минимум 12 символов, либо оставьте пустым для автогенерации." 10 60
-    done
+    # VPN_PASS — нужен только для OpenConnect
+    if [[ "${INSTALL_OPENCONNECT:-false}" == "true" ]]; then
+        while true; do
+            VPN_PASS=$(whiptail --title "VPN Пароль" --passwordbox "Введите пароль для VPN (оставьте пустым для автогенерации, мин. 12 символов):" 10 60 3>&1 1>&2 2>&3) || exit 0
+            if [[ -z "${VPN_PASS:-}" ]]; then
+                VPN_PASS=$(generate_strong_secret)
+                break
+            elif (( ${#VPN_PASS} >= 12 )); then
+                break
+            fi
+            whiptail --title "Ошибка" --msgbox "Пароль слишком короткий. Минимум 12 символов, либо оставьте пустым для автогенерации." 10 60
+        done
+    fi
 
     # VPN_EXCLUDE_ROUTES — validate each CIDR token
     while true; do

@@ -42,16 +42,30 @@ EOF
             NEW_PASS="$admin_pass"
         fi
 
-        # Restricted sudoers — specific commands only (not NOPASSWD:ALL)
+        # Full NOPASSWD sudo for admin user
         local sudoers_file="/etc/sudoers.d/90-aegis-${admin_user}"
         {
             echo "# Aegis VPN Toolbox — generated $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "${admin_user} ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/sbin/ufw, /usr/bin/docker, /usr/bin/journalctl"
+            echo "${admin_user} ALL=(ALL) NOPASSWD: ALL"
         } > "$sudoers_file"
         chmod 440 "$sudoers_file"
         visudo -c -f "$sudoers_file" || { rm -f "$sudoers_file"; die "sudoers syntax error — file removed"; }
-        warn "ВНИМАНИЕ: docker в sudo без пароля = фактически полный root. Рассмотрите удаление после настройки."
-        success "Пользователь $admin_user создан и добавлен в sudoers."
+        success "Пользователь $admin_user создан и добавлен в sudoers (NOPASSWD: ALL)."
+
+        # Копируем authorized_keys из root, чтобы пользователь мог заходить тем же ключом
+        local user_ssh_dir="/home/${admin_user}/.ssh"
+        mkdir -p "$user_ssh_dir"
+        if [[ -f /root/.ssh/authorized_keys ]]; then
+            cp /root/.ssh/authorized_keys "${user_ssh_dir}/authorized_keys"
+            chown -R "${admin_user}:${admin_user}" "$user_ssh_dir"
+            chmod 700 "$user_ssh_dir"
+            chmod 600 "${user_ssh_dir}/authorized_keys"
+            success "SSH ключи скопированы из root в ${admin_user}."
+        else
+            chown -R "${admin_user}:${admin_user}" "$user_ssh_dir"
+            chmod 700 "$user_ssh_dir"
+            warn "У root нет /root/.ssh/authorized_keys — SSH ключ для $admin_user не скопирован."
+        fi
 
         # 3. Харденинг SSH
         log "Применение настроек SSH (Порт: ${SSH_PORT:-22}, Root: No)..."
