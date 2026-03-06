@@ -64,8 +64,11 @@ xui_api_update_user() {
       --data-urlencode "newUsername=${new_user}" \
       --data-urlencode "newPassword=${new_pass}" \
       "${origin}${base_path}panel/setting/updateUser" || true)
-
-    [[ "$response" == *'"success":true'* ]]
+    if [[ "$response" == *'"success":true'* ]]; then
+        return 0
+    fi
+    error "Ошибка updateUser API (${origin}${base_path}panel/setting/updateUser). Ответ: $response"
+    return 1
 }
 
 xui_api_add_inbound() {
@@ -92,6 +95,9 @@ xui_api_add_inbound() {
       --data-urlencode 'sniffing={"enabled":true,"destOverride":["http","tls","quic"]}' \
       -X POST \
       "${origin}${base_path}panel/api/inbounds/add" || true)
-
-    [[ "$response" == *'"success":true'* ]]
+    if [[ "$response" == *'"success":true'* ]]; then
+        return 0
+    fi
+    error "Ошибка add_inbound API (${origin}${base_path}panel/api/inbounds/add). Ответ: $response"
+    return 1
 }

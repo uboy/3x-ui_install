@@ -145,15 +145,25 @@ module_xui_configure() {
         fi
         sid=$(generate_random_fixed 8 '0-9a-f' true)
 
-        local settings stream_settings
+        local settings stream_settings reality_dest reality_server_name reality_flow
+        # Compatibility-first defaults (can be overridden via env):
+        # - REALITY_DEST (e.g. google.com:443, www.cloudflare.com:443)
+        # - REALITY_SERVER_NAME (SNI)
+        # - REALITY_FLOW (e.g. "", xtls-rprx-vision)
+        reality_dest="${REALITY_DEST:-google.com:443}"
+        reality_server_name="${REALITY_SERVER_NAME:-google.com}"
+        reality_flow="${REALITY_FLOW:-}"
         settings=$(jq -cn \
             --arg id "$client_id" \
             --arg email "${VPN_USER:-vpn}@${DOMAIN}" \
-            '{decryption:"none",clients:[{id:$id,flow:"xtls-rprx-vision",email:$email,totalGB:0,expiryTime:0,enable:true}]}')
+            --arg flow "$reality_flow" \
+            '{decryption:"none",clients:[{id:$id,flow:$flow,email:$email,totalGB:0,expiryTime:0,enable:true}]}')
         stream_settings=$(jq -cn \
             --arg pk "$reality_priv_key" \
             --arg sid "$sid" \
-            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:"www.microsoft.com:443",serverNames:["microsoft.com"],privateKey:$pk,shortIds:[$sid]}}')
+            --arg rd "$reality_dest" \
+            --arg rsn "$reality_server_name" \
+            '{network:"tcp",security:"reality",realitySettings:{show:false,dest:$rd,serverNames:[$rsn],privateKey:$pk,shortIds:[$sid]}}')
 
         local response
         firewall_allow "${PORT_XUI_REALITY:-443}"

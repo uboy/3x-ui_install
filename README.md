@@ -18,6 +18,41 @@
    ```
 3. Следуйте инструкциям на экране.
 
+## Поведение панели 3x-ui (важно)
+- При включенном `Hardening` панель **не публикуется в интернет** — это штатный и безопасный режим.
+- Доступ к панели выполняется через SSH-туннель.
+- Потеря SSH-туннеля/SSH-сессии выглядит как "панель недоступна", даже если контейнер `3x-ui` работает нормально.
+
+Пример туннеля:
+```bash
+ssh -N -L 2053:127.0.0.1:2053 <user>@<server> -p <ssh_port>
+```
+
+## Диагностика отвалов клиентов 3x-ui
+Если отваливаются именно клиенты (а не веб-панель), сначала отделите проблему доступа к панели от проблемы `xray`/inbound:
+
+```bash
+docker inspect 3x-ui --format 'status={{.State.Status}} restart={{.RestartCount}} started={{.State.StartedAt}}'
+docker logs 3x-ui --since 2h --timestamps | tail -n 300
+journalctl -u docker --since "2 hours ago" --no-pager | tail -n 300
+ss -lntp | grep -E ':2053|:443'
+ufw status numbered
+```
+
+Что проверять в логах:
+- `xray`, `reality`, `tls`, `handshake`, `timeout`, `killed`, `oom`, `panic`, `fatal`.
+
+## Примечание по Reality target/SNI
+- Для стабильности Reality обычно лучше использовать согласованную пару `dest` и `serverNames` (один и тот же хост-профиль).
+- По умолчанию авто-создание использует совместимый профиль:
+  - `dest=google.com:443`
+  - `serverNames=[\"google.com\"]`
+  - `flow=\"\"` (пустой, без принудительного `xtls-rprx-vision`)
+- При необходимости можно переопределить через переменные окружения:
+  - `REALITY_DEST`
+  - `REALITY_SERVER_NAME`
+  - `REALITY_FLOW`
+
 ## Структура проекта
 - `install.sh` — главный оркестратор.
 - `lib/` — библиотеки (API, UI, State, Utils).
