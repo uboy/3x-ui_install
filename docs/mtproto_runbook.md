@@ -69,17 +69,23 @@ grep ExecStart /etc/systemd/system/mtproxy.service
 systemctl edit --full mtproxy
 ```
 
-В строке `ExecStart=` добавляем ещё один флаг `-S NEW_SECRET` рядом с уже имеющимся:
+В строке `ExecStart=` добавляем ещё один флаг `-S NEW_RAW_SECRET` рядом с уже имеющимся.
+
+> **Важно**: бинарник принимает ровно 32 hex-символа (без префикса `dd`).
+> Префикс `dd` добавляется только в ссылке `tg://proxy` — он сигнализирует клиенту об использовании fake-TLS.
+
 ```
 ExecStart=/opt/mtproxy/objs/bin/mtproto-proxy \
   -u _mtproxy \
-  -p 8888 \
-  -H 443 \
-  -S ddABCDEF1234...старый... \
-  -S ddNEWNEWSECRET...новый... \
-  --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf \
-  --multithread
+  -p 443 \
+  -S ABCDEF1234...старый (32 hex)... \
+  -S NEWABCDEF12...новый (32 hex)... \
+  --aes-pwd /etc/mtproxy/proxy-secret \
+  --domain www.google.com \
+  /etc/mtproxy/proxy-multi.conf
 ```
+
+> Флаг `-M` (workers) не рекомендован в TLS-режиме (`--domain`) для защиты от replay-атак.
 
 Применяем:
 ```bash
@@ -165,9 +171,8 @@ curl -sv https://core.telegram.org/ --max-time 5
 ## 7. Быстрая проверка после установки
 
 ```bash
-systemctl is-active mtproxy          # должно быть: active
-ss -tlnp | grep mtproto-proxy        # должен слушать PORT
-curl -s http://127.0.0.1:8888/stats  # статистика доступна
+systemctl is-active mtproxy    # должно быть: active
+ss -tlnp | grep mtproto-proxy  # должен слушать PORT
 ```
 
 Открываем ссылку `tg://proxy?...` на телефоне → в Telegram появится диалог «Подключиться к прокси».

@@ -4,13 +4,20 @@ module_mtproto_install() {
     [[ "${INSTALL_MTPROXY:-false}" == "true" ]] || return 0
 
     local mt_port="${PORT_MTPROXY:-443}"
-    local mt_stats_port="${PORT_MTPROXY_STATS:-8888}"
-    local mt_repo_dir="/opt/mtproxy"
     local mt_conf_dir="/etc/mtproxy"
-    local mt_binary="${mt_repo_dir}/objs/bin/mtproto-proxy"
-    local mt_secret="${MTPROXY_SECRET:-}"
+    local mt_binary="/opt/mtproxy/objs/bin/mtproto-proxy"
+    local mt_repo_dir="/opt/mtproxy"
     local mt_user="_mtproxy"
-    local mt_hex=""
+
+    # Normalize secret: binary needs exactly 32 hex chars (no dd prefix).
+    # tg://proxy link uses dd<hex32> to signal fake-TLS to the client.
+    local mt_raw_secret="${MTPROXY_SECRET:-}"
+    if [[ "$mt_raw_secret" =~ ^dd([a-f0-9]{32})$ ]]; then
+        mt_raw_secret="${BASH_REMATCH[1]}"
+    fi
+    if [[ ! "$mt_raw_secret" =~ ^[a-f0-9]{32}$ ]]; then
+        mt_raw_secret="$(openssl rand -hex 16)"
+    fi
 
     if systemctl is-active --quiet mtproxy 2>/dev/null || [[ -x "$mt_binary" ]]; then
         if ! ui_ask_reinstall "MTProto Proxy"; then
@@ -26,8 +33,7 @@ module_mtproto_install() {
         rm -rf "$mt_repo_dir" "$mt_conf_dir"
     fi
 
-    log "Установка MTProto Proxy нативно из официального репозитория..."
-    apt-get update
+    log "Установка MTProto Proxy (сборка из исходников)..."
     apt-get install -y git curl build-essential libssl-dev zlib1g-dev
 
     rm -rf "$mt_repo_dir"
@@ -41,28 +47,23 @@ module_mtproto_install() {
 
     mkdir -p "$mt_conf_dir"
     curl -fsSL https://core.telegram.org/getProxySecret -o "${mt_conf_dir}/proxy-secret"
-    curl -fsSL https://core.telegram.org/getProxyConfig -o "${mt_conf_dir}/proxy-multi.conf"
+    curl -fsSL https://core.telegram.org/getProxyConfig  -o "${mt_conf_dir}/proxy-multi.conf"
     chmod 600 "${mt_conf_dir}/proxy-secret" "${mt_conf_dir}/proxy-multi.conf"
 
-    if [[ ! "$mt_secret" =~ ^dd[a-f0-9]{32}$ ]]; then
-        mt_hex="$(generate_random_fixed 32 'abcdef0123456789' true)" || mt_hex="$(openssl rand -hex 16)"
-        mt_secret="dd${mt_hex}"
-    fi
-    MTPROXY_SECRET="$mt_secret"
-
-    while ! check_port_free "$mt_stats_port"; do
-        mt_stats_port=$((mt_stats_port + 1))
-        if (( mt_stats_port > 65535 )); then
-            error "Не удалось подобрать свободный локальный порт статистики для MTProto."
-            return 1
-        fi
-    done
-    PORT_MTPROXY_STATS="$mt_stats_port"
+    # Store dd-prefixed secret for tg://proxy link
+    MTPROXY_SECRET="dd${mt_raw_secret}"
 
     if ! id "$mt_user" &>/dev/null; then
         useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin "$mt_user"
     fi
 
+    # Flags (new binary API):
+    #   -p PORT        — main proxy listen port
+    #   -S HEX32       — exactly 32 hex chars (no dd prefix for the binary itself)
+    #   --aes-pwd FILE — ONE argument: proxy-secret file
+    #   <conf-file>    — positional: proxy-multi.conf
+    #   --domain HOST  — enable fake-TLS; client uses dd<secret> in tg link
+    #   -M N           — worker count (--slaves)
     cat > /etc/systemd/system/mtproxy.service <<EOF
 [Unit]
 Description=Telegram MTProto Proxy
@@ -72,7 +73,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${mt_repo_dir}
-ExecStart=${mt_binary} -u ${mt_user} -p ${PORT_MTPROXY_STATS} -H ${mt_port} -S ${MTPROXY_SECRET} --aes-pwd ${mt_conf_dir}/proxy-secret ${mt_conf_dir}/proxy-multi.conf --multithread
+ExecStart=${mt_binary} \\
+  -u ${mt_user} \\
+  -p ${mt_port} \\
+  -S ${mt_raw_secret} \\
+  --aes-pwd ${mt_conf_dir}/proxy-secret \\
+  --domain www.google.com \\
+  ${mt_conf_dir}/proxy-multi.conf
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -85,13 +92,17 @@ EOF
     systemctl enable mtproxy
     systemctl restart mtproxy
 
-    sleep 3
-    if ! systemctl is-active --quiet mtproxy; then
-        error "Сервис mtproxy не запустился. Журнал:"
-        journalctl -u mtproxy --no-pager | tail -15
-        return 1
-    fi
+    local i
+    for (( i=0; i<15; i++ )); do
+        sleep 2
+        if systemctl is-active --quiet mtproxy; then
+            firewall_allow "$mt_port" tcp
+            success "MTProto Proxy успешно запущен на порту ${mt_port}/TCP."
+            return 0
+        fi
+    done
 
-    firewall_allow "$mt_port" tcp
-    success "MTProto Proxy успешно запущен на порту ${mt_port}/TCP."
+    error "Сервис mtproxy не запустился. Журнал:"
+    journalctl -u mtproxy --no-pager | head -40
+    return 1
 }

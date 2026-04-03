@@ -497,8 +497,7 @@ ui_final_report() {
         report="${report}${BLUE}${BOLD}--- MTProto (Telegram Proxy) ---${NC}\n"
         report="${report}Сервер: ${DOMAIN}:${PORT_MTPROXY:-443}\n"
         report="${report}Секрет: ${MTPROXY_SECRET}\n"
-        report="${report}Ссылка Telegram: tg://proxy?server=${DOMAIN}&port=${PORT_MTPROXY:-443}&secret=${MTPROXY_SECRET}\n"
-        report="${report}Локальная статистика: http://127.0.0.1:${PORT_MTPROXY_STATS:-8888}/stats\n\n"
+        report="${report}Ссылка Telegram: tg://proxy?server=${DOMAIN}&port=${PORT_MTPROXY:-443}&secret=${MTPROXY_SECRET}\n\n"
     elif [[ "$INSTALL_MTPROXY" == "skipped" ]]; then
         report="${report}${YELLOW}--- MTProto (Пропущено) ---${NC}\n\n"
     fi
