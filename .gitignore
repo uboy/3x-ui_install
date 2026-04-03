@@ -32,6 +32,10 @@ temp/
 secrets/
 credentials/
 
+# Agent/coordination runtime state
+coordination/
+.agent-memory/
+
 # Editor and OS
 .vscode/
 .idea/
