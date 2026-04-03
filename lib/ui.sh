@@ -110,14 +110,16 @@ ui_get_basic_info() {
         done
     fi
 
-    # VPN_USER — loop until valid
-    while true; do
-        VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN (OpenConnect):" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3) || exit 0
-        if is_valid_username "$VPN_USER"; then
-            break
-        fi
-        whiptail --title "Ошибка" --msgbox "Некорректное имя пользователя: '${VPN_USER}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." 12 60
-    done
+    # VPN_USER — нужен только для OpenVPN / OpenConnect / Dumbproxy
+    if [[ "${INSTALL_OPENVPN:-false}" == "true" || "${INSTALL_OPENCONNECT:-false}" == "true" || "${INSTALL_DUMBPROXY:-false}" == "true" ]]; then
+        while true; do
+            VPN_USER=$(whiptail --title "VPN Пользователь" --inputbox "Введите имя пользователя для VPN:" 10 60 "${VPN_USER:-vpnuser}" 3>&1 1>&2 2>&3) || exit 0
+            if is_valid_username "$VPN_USER"; then
+                break
+            fi
+            whiptail --title "Ошибка" --msgbox "Некорректное имя пользователя: '${VPN_USER}'\nДопустимо: строчные буквы, цифры, _ и - (начало: буква или _). Макс. 32 символа." 12 60
+        done
+    fi
 
     # VPN_PASS — нужен только для OpenConnect
     if [[ "${INSTALL_OPENCONNECT:-false}" == "true" ]]; then
@@ -133,27 +135,29 @@ ui_get_basic_info() {
         done
     fi
 
-    # VPN_EXCLUDE_ROUTES — validate each CIDR token
-    while true; do
-        VPN_EXCLUDE_ROUTES=$(whiptail --title "Исключения маршрутов" --inputbox "Введите через запятую сети для исключения из VPN (напр. 1.1.1.1/32, 10.0.0.0/8). По умолчанию 192.168.0.0/16 уже исключена." 12 60 "${VPN_EXCLUDE_ROUTES:-}" 3>&1 1>&2 2>&3) || exit 0
-        if [[ -z "${VPN_EXCLUDE_ROUTES:-}" ]]; then
-            break
-        fi
-        local _bad_cidr="" _cidr_token=""
-        IFS=',' read -ra _cidr_tokens <<< "$VPN_EXCLUDE_ROUTES"
-        for _cidr_token in "${_cidr_tokens[@]}"; do
-            _cidr_token="${_cidr_token// /}"  # trim spaces
-            [[ -z "$_cidr_token" ]] && continue
-            if ! is_valid_cidr "$_cidr_token"; then
-                _bad_cidr="$_cidr_token"
+    # VPN_EXCLUDE_ROUTES — нужен только для OpenVPN / OpenConnect
+    if [[ "${INSTALL_OPENVPN:-false}" == "true" || "${INSTALL_OPENCONNECT:-false}" == "true" ]]; then
+        while true; do
+            VPN_EXCLUDE_ROUTES=$(whiptail --title "Исключения маршрутов" --inputbox "Введите через запятую сети для исключения из VPN (напр. 1.1.1.1/32, 10.0.0.0/8). По умолчанию 192.168.0.0/16 уже исключена." 12 60 "${VPN_EXCLUDE_ROUTES:-}" 3>&1 1>&2 2>&3) || exit 0
+            if [[ -z "${VPN_EXCLUDE_ROUTES:-}" ]]; then
                 break
             fi
+            local _bad_cidr="" _cidr_token=""
+            IFS=',' read -ra _cidr_tokens <<< "$VPN_EXCLUDE_ROUTES"
+            for _cidr_token in "${_cidr_tokens[@]}"; do
+                _cidr_token="${_cidr_token// /}"  # trim spaces
+                [[ -z "$_cidr_token" ]] && continue
+                if ! is_valid_cidr "$_cidr_token"; then
+                    _bad_cidr="$_cidr_token"
+                    break
+                fi
+            done
+            if [[ -z "$_bad_cidr" ]]; then
+                break
+            fi
+            whiptail --title "Ошибка" --msgbox "Некорректный CIDR: '${_bad_cidr}'\nПример: 10.0.0.0/8" 10 60
         done
-        if [[ -z "$_bad_cidr" ]]; then
-            break
-        fi
-        whiptail --title "Ошибка" --msgbox "Некорректный CIDR: '${_bad_cidr}'\nПример: 10.0.0.0/8" 10 60
-    done
+    fi
 
     if [[ "${INSTALL_XUI:-false}" == "true" ]]; then
         while true; do
