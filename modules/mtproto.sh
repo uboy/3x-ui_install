@@ -9,9 +9,13 @@ module_mtproto_install() {
     local mt_repo_dir="/opt/mtproxy"
     local mt_user="_mtproxy"
 
-    # Normalize secret: binary needs exactly 32 hex chars (no dd prefix).
-    # tg://proxy link uses dd<hex32> to signal fake-TLS to the client.
+    # Secret: exactly 32 hex chars for the binary and tg://proxy link.
+    # No dd/ee prefix — standard obfuscated MTProto mode (no fake-TLS).
+    # Fake-TLS (dd prefix) requires matching client SNI which Telegram picks
+    # randomly; without embedding the domain in the secret (ee format) it
+    # silently drops all connections.
     local mt_raw_secret="${MTPROXY_SECRET:-}"
+    # Strip dd prefix if present from a previous installation
     if [[ "$mt_raw_secret" =~ ^dd([a-f0-9]{32})$ ]]; then
         mt_raw_secret="${BASH_REMATCH[1]}"
     fi
@@ -62,20 +66,22 @@ module_mtproto_install() {
     curl -fsSL https://core.telegram.org/getProxyConfig  -o "${mt_conf_dir}/proxy-multi.conf"
     chmod 600 "${mt_conf_dir}/proxy-secret" "${mt_conf_dir}/proxy-multi.conf"
 
-    # Store dd-prefixed secret for tg://proxy link
-    MTPROXY_SECRET="dd${mt_raw_secret}"
+    # Store raw secret — tg://proxy link uses it directly (no dd prefix)
+    MTPROXY_SECRET="${mt_raw_secret}"
 
     if ! id "$mt_user" &>/dev/null; then
         useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin "$mt_user"
     fi
 
     # Flags (new binary API):
-    #   -p PORT        — main proxy listen port
-    #   -S HEX32       — exactly 32 hex chars (no dd prefix for the binary itself)
-    #   --aes-pwd FILE — ONE argument: proxy-secret file
+    #   -H PORT        — client-facing TCP listen port
+    #   -S HEX32       — exactly 32 hex chars
+    #   --aes-pwd FILE — proxy-secret file (one argument)
     #   <conf-file>    — positional: proxy-multi.conf
-    #   --domain HOST  — enable fake-TLS; client uses dd<secret> in tg link
-    #   -M N           — worker count (--slaves)
+    # No --domain: use standard obfuscated MTProto mode.
+    # Fake-TLS (--domain + dd secret) requires the client to use the exact
+    # SNI that matches --domain; Telegram picks SNI randomly so connections
+    # are silently dropped unless the domain is embedded in an ee-secret.
     cat > /etc/systemd/system/mtproxy.service <<EOF
 [Unit]
 Description=Telegram MTProto Proxy
@@ -90,7 +96,6 @@ ExecStart=${mt_binary} \\
   -H ${mt_port} \\
   -S ${mt_raw_secret} \\
   --aes-pwd ${mt_conf_dir}/proxy-secret \\
-  --domain www.google.com \\
   ${mt_conf_dir}/proxy-multi.conf
 Restart=on-failure
 RestartSec=5
