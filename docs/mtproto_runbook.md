@@ -21,12 +21,19 @@ sudo bash install.sh
 В меню checklist выбрать **MTProto** (пробел), ввести порт. После установки в финальном отчёте будет:
 
 ```
-Сервер:   example.com:443
-Секрет:   dd<32 hex символа>
-Ссылка:   tg://proxy?server=example.com&port=443&secret=dd...
+Сервер:   example.com:8443
+Секрет:   <32 hex символа>
+Ссылка:   tg://proxy?server=example.com&port=8443&secret=<32hex>
 ```
 
 Ссылка также сохраняется в `/root/.aegis-vpn.state`.
+
+### Особенности текущей реализации
+
+- Режим: **стандартный obfuscated MTProto** (без fake-TLS).
+- `-H PORT` открывает клиентский сокет; `-p` в этой версии бинарника — внутренний порт.
+- `Started as [172.17.0.1:...]` в логе — это routing IP, не bind-адрес. Реальный bind: `0.0.0.0:PORT`.
+- MTProxy не логирует обычные соединения — пустой журнал при подключении это норма.
 
 ---
 
