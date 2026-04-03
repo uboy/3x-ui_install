@@ -38,6 +38,11 @@ module_mtproto_install() {
 
     rm -rf "$mt_repo_dir"
     git clone --depth 1 https://github.com/TelegramMessenger/MTProxy "$mt_repo_dir"
+
+    # Patch: MTProxy asserts PID fits in 16 bits, which fails on modern kernels
+    # where PIDs routinely exceed 65535. Remove the hard assertion.
+    sed -i '/assert(!(p & 0xffff0000))/d' "${mt_repo_dir}/common/pid.c"
+
     make -C "$mt_repo_dir"
 
     [[ -x "$mt_binary" ]] || {
