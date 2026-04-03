@@ -41,7 +41,14 @@ module_mtproto_install() {
 
     # Patch: MTProxy asserts PID fits in 16 bits, which fails on modern kernels
     # where PIDs routinely exceed 65535. Remove the hard assertion.
-    sed -i '/assert(!(p & 0xffff0000))/d' "${mt_repo_dir}/common/pid.c"
+    if grep -q '0xffff0000' "${mt_repo_dir}/common/pid.c"; then
+        sed -i '/0xffff0000/d' "${mt_repo_dir}/common/pid.c"
+        grep -q '0xffff0000' "${mt_repo_dir}/common/pid.c" && \
+            { error "Не удалось применить патч pid.c"; return 1; }
+        log "Патч pid.c применён успешно."
+    else
+        log "Патч pid.c: строка уже отсутствует, пропуск."
+    fi
 
     make -C "$mt_repo_dir"
 
