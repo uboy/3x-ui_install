@@ -78,7 +78,7 @@ ExecStart=/opt/mtproxy/objs/bin/mtproto-proxy \
   -S ddABCDEF1234...старый... \
   -S ddNEWNEWSECRET...новый... \
   --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf \
-  -M 1
+  --multithread
 ```
 
 Применяем:

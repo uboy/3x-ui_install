@@ -72,7 +72,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${mt_repo_dir}
-ExecStart=${mt_binary} -u ${mt_user} -p ${PORT_MTPROXY_STATS} -H ${mt_port} -S ${MTPROXY_SECRET} --aes-pwd ${mt_conf_dir}/proxy-secret ${mt_conf_dir}/proxy-multi.conf -M 1
+ExecStart=${mt_binary} -u ${mt_user} -p ${PORT_MTPROXY_STATS} -H ${mt_port} -S ${MTPROXY_SECRET} --aes-pwd ${mt_conf_dir}/proxy-secret ${mt_conf_dir}/proxy-multi.conf --multithread
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
