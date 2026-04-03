@@ -41,6 +41,10 @@ ui_port_reusable_for_selected_service() {
             (systemctl is-active --quiet dumbproxy 2>/dev/null || [[ -x /usr/local/bin/dumbproxy ]]) || return 1
             port_in_use_by_pattern "$port" "dumbproxy" tcp
             ;;
+        PORT_MTPROXY)
+            (systemctl is-active --quiet mtproxy 2>/dev/null || [[ -x /opt/mtproxy/objs/bin/mtproto-proxy ]]) || return 1
+            port_in_use_by_pattern "$port" "mtproto-proxy|mtproxy" tcp
+            ;;
         *)
             return 1
             ;;
@@ -52,8 +56,10 @@ ui_select_components() {
     choices=$(whiptail --title "Aegis VPN Toolbox - Выбор" --checklist \
     "Выберите компоненты для установки (Пробел - выбор, Enter - подтверждение):" 20 70 10 \
     "XUI" "3x-ui Panel (Xray/VLESS/Reality)" ON \
+    "OpenVPN" "Классический VPN через DockOVPN" OFF \
     "OpenConnect" "Cisco AnyConnect совместимый VPN" OFF \
     "Dumbproxy" "HTTP/HTTPS прокси-сервер с авторизацией" OFF \
+    "MTProto" "Telegram MTProto прокси" OFF \
     "Hardening" "Усиление безопасности SSH/Fail2Ban/UFW" ON 3>&1 1>&2 2>&3) || exit 0
 
     # Сбрасываем флаги
@@ -62,19 +68,22 @@ ui_select_components() {
     INSTALL_OPENCONNECT="false"
     INSTALL_AMNEZIA="false"
     INSTALL_DUMBPROXY="false"
+    INSTALL_MTPROXY="false"
     INSTALL_HARDENING="false"
 
     for choice in $choices; do
         case $choice in
             "\"XUI\"") INSTALL_XUI="true" ;;
+            "\"OpenVPN\"") INSTALL_OPENVPN="true" ;;
             "\"OpenConnect\"") INSTALL_OPENCONNECT="true" ;;
             "\"Dumbproxy\"") INSTALL_DUMBPROXY="true" ;;
+            "\"MTProto\"") INSTALL_MTPROXY="true" ;;
             "\"Hardening\"") INSTALL_HARDENING="true" ;;
         esac
     done
 
     # Если ничего не выбрано - выходим
-    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_DUMBPROXY" == "false" && "$INSTALL_HARDENING" == "false" ]]; then
+    if [[ "$INSTALL_XUI" == "false" && "$INSTALL_OPENVPN" == "false" && "$INSTALL_OPENCONNECT" == "false" && "$INSTALL_DUMBPROXY" == "false" && "$INSTALL_MTPROXY" == "false" && "$INSTALL_HARDENING" == "false" ]]; then
         whiptail --title "Ошибка" --msgbox "Ничего не выбрано. Установка отменена." 10 60
         exit 0
     fi
@@ -273,6 +282,11 @@ ui_get_ports() {
         _vars+=(PORT_DUMBPROXY)
         _defaults+=("${PORT_DUMBPROXY:-8080}")
     }
+    [[ "${INSTALL_MTPROXY:-false}" == "true" ]] && {
+        _labels+=("Порт MTProto (TCP):")
+        _vars+=(PORT_MTPROXY)
+        _defaults+=("${PORT_MTPROXY:-443}")
+    }
 
     [[ ${#_vars[@]} -eq 0 ]] && return 0
 
@@ -402,7 +416,8 @@ ui_final_report() {
     report="${report}Порт OpenVPN: ${PORT_OPENVPN:-1194}\n"
     report="${report}Порт OpenConnect: ${PORT_OPENCONNECT:-4443}\n"
     report="${report}Порт AmneziaWG: ${PORT_AMNEZIA:-51820}\n"
-    report="${report}Порт Dumbproxy: ${PORT_DUMBPROXY:-8080}\n\n"
+    report="${report}Порт Dumbproxy: ${PORT_DUMBPROXY:-8080}\n"
+    report="${report}Порт MTProto: ${PORT_MTPROXY:-443}\n\n"
 
     report="${report}${BLUE}${BOLD}--- ОБЩИЕ ДАННЫЕ СЕРВЕРА ---${NC}\n"
     if [[ "${INSTALL_MODE:-}" == "super-secure" ]]; then
@@ -472,6 +487,16 @@ ui_final_report() {
         report="${report}Пароль: ${VPN_PASS}\n\n"
     elif [[ "$INSTALL_DUMBPROXY" == "skipped" ]]; then
         report="${report}${YELLOW}--- Dumbproxy (Пропущено) ---${NC}\n\n"
+    fi
+
+    if [[ "$INSTALL_MTPROXY" == "true" ]]; then
+        report="${report}${BLUE}${BOLD}--- MTProto (Telegram Proxy) ---${NC}\n"
+        report="${report}Сервер: ${DOMAIN}:${PORT_MTPROXY:-443}\n"
+        report="${report}Секрет: ${MTPROXY_SECRET}\n"
+        report="${report}Ссылка Telegram: tg://proxy?server=${DOMAIN}&port=${PORT_MTPROXY:-443}&secret=${MTPROXY_SECRET}\n"
+        report="${report}Локальная статистика: http://127.0.0.1:${PORT_MTPROXY_STATS:-8888}/stats\n\n"
+    elif [[ "$INSTALL_MTPROXY" == "skipped" ]]; then
+        report="${report}${YELLOW}--- MTProto (Пропущено) ---${NC}\n\n"
     fi
 
     report="${report}${GREEN}${BOLD}Все пароли сохранены в файле состояния: /root/.aegis-vpn.state${NC}\n"
