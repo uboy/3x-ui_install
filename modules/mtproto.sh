@@ -90,6 +90,7 @@ ExecStart=${mt_binary} \\
   -p ${mt_port} \\
   -S ${mt_raw_secret} \\
   --aes-pwd ${mt_conf_dir}/proxy-secret \\
+  --address 0.0.0.0 \\
   --domain www.google.com \\
   ${mt_conf_dir}/proxy-multi.conf
 Restart=on-failure
