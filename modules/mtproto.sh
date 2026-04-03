@@ -103,6 +103,6 @@ EOF
     done
 
     error "Сервис mtproxy не запустился. Журнал:"
-    journalctl -u mtproxy --no-pager | head -40
+    journalctl -u mtproxy --no-pager -n 40
     return 1
 }
