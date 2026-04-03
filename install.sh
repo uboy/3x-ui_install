@@ -146,7 +146,7 @@ main() {
   fi
 
   # Проверка свободного места (минимум 5 ГБ)
-  check_disk_space 5
+  check_disk_space 2
 
   module_base_install
   firewall_init
