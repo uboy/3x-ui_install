@@ -40,6 +40,7 @@ module_openconnect_install() {
     cat > /etc/ocserv/ocserv.conf <<EOF
 # Способ аутентификации
 auth = "plain[passwd=/etc/ocserv/ocpasswd]"
+log-level = 3
 
 # Сетевые настройки
 tcp-port = ${PORT_OPENCONNECT:-4443}
@@ -52,25 +53,27 @@ run-as-group = ocserv
 # Сертификаты
 server-cert = $cert_path
 server-key = $key_path
-ca-cert = $cert_path
 
 # Лимиты и тайм-ауты
 isolate-workers = true
 max-clients = 64
-max-same-clients = 5
-keepalive = 30
-dpd = 60
-mobile-dpd = 300
-switch-to-tcp-timeout = 25
-try-mtu-discovery = false
+max-same-clients = 9
+keepalive = 20
+dpd = 300
+mobile-dpd = 1800
+switch-to-tcp-timeout = 5
+try-mtu-discovery = true
 mtu = 1200
-idle-timeout = 1200
-mobile-idle-timeout = 2400
+idle-timeout = 86400
+mobile-idle-timeout = 86400
 compression = false
 no-compress-limit = 256
+cookie-timeout = 300
+stats-report-time = 60
+max-ban-score = 50
+ban-reset-time = 1200
 
 # Настройки IP
-cert-user-oid = 2.5.4.3
 default-domain = $DOMAIN
 ipv4-network = 192.168.10.0
 ipv4-netmask = 255.255.255.0
@@ -103,7 +106,6 @@ rekey-method = ssl
 # Совместимость
 cisco-client-compat = true
 dtls-psk = true
-dtls-legacy = true
 tls-priorities = "NORMAL:%SERVER_PRECEDENCE:%COMPAT:-RSA:-VERS-SSL3.0:-ARCFOUR-128"
 route = default
 EOF
