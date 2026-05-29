@@ -5,26 +5,25 @@ module_mtproto_install() {
 
     local mt_port="${PORT_MTPROXY:-443}"
     local mt_conf_dir="/etc/mtproxy"
-    local mt_binary="/opt/mtproxy/objs/bin/mtproto-proxy"
     local mt_repo_dir="/opt/mtproxy"
+    local mt_binary="${mt_repo_dir}/mtg"
     local mt_user="_mtproxy"
+    # Use the actual server domain for masking instead of google.com
+    local mt_domain="${MTPROXY_DOMAIN:-$DOMAIN}"
+    [[ -n "$mt_domain" ]] || mt_domain="google.com"
 
-    # Secret: exactly 32 hex chars for the binary and tg://proxy link.
-    # No dd/ee prefix — standard obfuscated MTProto mode (no fake-TLS).
-    # Fake-TLS (dd prefix) requires matching client SNI which Telegram picks
-    # randomly; without embedding the domain in the secret (ee format) it
-    # silently drops all connections.
+    # Secret handling: mtg v2 uses ee-secrets for Fake-TLS (Generation 3)
+    # Format: ee + 16 random bytes + hex-encoded domain.
     local mt_raw_secret="${MTPROXY_SECRET:-}"
-    # Strip dd prefix if present from a previous installation
-    if [[ "$mt_raw_secret" =~ ^dd([a-f0-9]{32})$ ]]; then
-        mt_raw_secret="${BASH_REMATCH[1]}"
-    fi
-    if [[ ! "$mt_raw_secret" =~ ^[a-f0-9]{32}$ ]]; then
-        mt_raw_secret="$(openssl rand -hex 16)"
+    # If existing secret is not an ee-secret, we'll need to generate a new one.
+    # Also regenerate if mt_domain changed compared to what might be in the secret.
+    if [[ ! "$mt_raw_secret" =~ ^ee[a-f0-9]{32,} ]]; then
+        mt_raw_secret=""
     fi
 
-    if systemctl is-active --quiet mtproxy 2>/dev/null || [[ -x "$mt_binary" ]]; then
-        if ! ui_ask_reinstall "MTProto Proxy"; then
+    # Check for existing installation (either old C version or mtg)
+    if systemctl is-active --quiet mtproxy 2>/dev/null || [[ -x "$mt_binary" ]] || [[ -x "/opt/mtproxy/objs/bin/mtproto-proxy" ]]; then
+        if ! ui_ask_reinstall "MTProto Proxy (mtg)"; then
             log "Пропуск установки MTProto Proxy."
             INSTALL_MTPROXY="skipped"
             return 0
@@ -37,66 +36,57 @@ module_mtproto_install() {
         rm -rf "$mt_repo_dir" "$mt_conf_dir"
     fi
 
-    log "Установка MTProto Proxy (сборка из исходников)..."
-    apt-get install -y git curl build-essential libssl-dev zlib1g-dev
+    log "Установка MTProto Proxy (mtg v2)..."
+    apt-get install -y curl jq tar
 
-    rm -rf "$mt_repo_dir"
-    git clone --depth 1 https://github.com/TelegramMessenger/MTProxy "$mt_repo_dir"
-
-    # Patch: MTProxy asserts PID fits in 16 bits, which fails on modern kernels
-    # where PIDs routinely exceed 65535. Remove the hard assertion.
-    if grep -q '0xffff0000' "${mt_repo_dir}/common/pid.c"; then
-        sed -i '/0xffff0000/d' "${mt_repo_dir}/common/pid.c"
-        grep -q '0xffff0000' "${mt_repo_dir}/common/pid.c" && \
-            { error "Не удалось применить патч pid.c"; return 1; }
-        log "Патч pid.c применён успешно."
-    else
-        log "Патч pid.c: строка уже отсутствует, пропуск."
-    fi
-
-    make -C "$mt_repo_dir"
+    mkdir -p "$mt_repo_dir" "$mt_conf_dir"
+    
+    local latest_tag tarball_url
+    latest_tag=$(curl -fsSL https://api.github.com/repos/9seconds/mtg/releases/latest | jq -r .tag_name)
+    tarball_url="https://github.com/9seconds/mtg/releases/download/${latest_tag}/mtg-${latest_tag#v}-linux-amd64.tar.gz"
+    
+    log "Загрузка mtg ${latest_tag}..."
+    curl -fsSL "$tarball_url" -o "${mt_repo_dir}/mtg.tar.gz"
+    tar -xzf "${mt_repo_dir}/mtg.tar.gz" -C "$mt_repo_dir" --strip-components=1
+    rm -f "${mt_repo_dir}/mtg.tar.gz"
 
     [[ -x "$mt_binary" ]] || {
-        error "Бинарник MTProxy не найден после сборки: ${mt_binary}"
+        error "Бинарник mtg не найден после распаковки: ${mt_binary}"
         return 1
     }
 
-    mkdir -p "$mt_conf_dir"
-    curl -fsSL https://core.telegram.org/getProxySecret -o "${mt_conf_dir}/proxy-secret"
-    curl -fsSL https://core.telegram.org/getProxyConfig  -o "${mt_conf_dir}/proxy-multi.conf"
-    chmod 600 "${mt_conf_dir}/proxy-secret" "${mt_conf_dir}/proxy-multi.conf"
-
-    # Store raw secret — tg://proxy link uses it directly (no dd prefix)
+    # Generate secret if needed
+    if [[ -z "$mt_raw_secret" ]]; then
+        log "Генерация Fake-TLS секрета для домена ${mt_domain}..."
+        mt_raw_secret=$("$mt_binary" generate-secret --hex "$mt_domain")
+        [[ -n "$mt_raw_secret" ]] || { error "Не удалось сгенерировать секрет"; return 1; }
+    fi
     MTPROXY_SECRET="${mt_raw_secret}"
 
     if ! id "$mt_user" &>/dev/null; then
         useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin "$mt_user"
     fi
 
-    # Flags (new binary API):
-    #   -H PORT        — client-facing TCP listen port
-    #   -S HEX32       — exactly 32 hex chars
-    #   --aes-pwd FILE — proxy-secret file (one argument)
-    #   <conf-file>    — positional: proxy-multi.conf
-    # No --domain: use standard obfuscated MTProto mode.
-    # Fake-TLS (--domain + dd secret) requires the client to use the exact
-    # SNI that matches --domain; Telegram picks SNI randomly so connections
-    # are silently dropped unless the domain is embedded in an ee-secret.
+    # Config file (TOML)
+    cat > "${mt_conf_dir}/mtg.toml" <<EOF
+secret = "${mt_raw_secret}"
+bind-to = "0.0.0.0:${mt_port}"
+EOF
+    chmod 600 "${mt_conf_dir}/mtg.toml"
+    chown "$mt_user:$mt_user" "${mt_conf_dir}/mtg.toml"
+
     cat > /etc/systemd/system/mtproxy.service <<EOF
 [Unit]
-Description=Telegram MTProto Proxy
+Description=mtg MTProto Proxy
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+User=${mt_user}
+Group=${mt_user}
 WorkingDirectory=${mt_repo_dir}
-ExecStart=${mt_binary} \\
-  -u ${mt_user} \\
-  -H ${mt_port} \\
-  -S ${mt_raw_secret} \\
-  --aes-pwd ${mt_conf_dir}/proxy-secret \\
-  ${mt_conf_dir}/proxy-multi.conf
+ExecStart=${mt_binary} run ${mt_conf_dir}/mtg.toml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -114,12 +104,12 @@ EOF
         sleep 2
         if systemctl is-active --quiet mtproxy; then
             firewall_allow "$mt_port" tcp
-            success "MTProto Proxy успешно запущен на порту ${mt_port}/TCP."
+            success "MTProto Proxy (mtg) успешно запущен на порту ${mt_port}/TCP."
             return 0
         fi
     done
 
-    error "Сервис mtproxy не запустился. Журнал:"
+    error "Сервис mtproxy (mtg) не запустился. Журнал:"
     journalctl -u mtproxy --no-pager -n 40
     return 1
 }

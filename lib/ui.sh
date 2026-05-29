@@ -42,8 +42,8 @@ ui_port_reusable_for_selected_service() {
             port_in_use_by_pattern "$port" "dumbproxy" tcp
             ;;
         PORT_MTPROXY)
-            (systemctl is-active --quiet mtproxy 2>/dev/null || [[ -x /opt/mtproxy/objs/bin/mtproto-proxy ]]) || return 1
-            port_in_use_by_pattern "$port" "mtproto-proxy|mtproxy" tcp
+            (systemctl is-active --quiet mtproxy 2>/dev/null || [[ -x /opt/mtproxy/mtg ]]) || return 1
+            port_in_use_by_pattern "$port" "mtg|mtproxy" tcp
             ;;
         *)
             return 1
