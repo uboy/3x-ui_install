@@ -80,6 +80,16 @@ module_mtproto_install() {
         useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin "$mt_user"
     fi
 
+    # Detect NAT: if the IP that routes to the internet differs from the public IP,
+    # Teleproxy must be told the mapping so it advertises the right address to Telegram DCs.
+    local mt_local_ip mt_public_ip mt_nat_arg=""
+    mt_local_ip=$(ip -4 route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+    mt_public_ip=$(curl -fsSL --max-time 5 https://icanhazip.com 2>/dev/null || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null || true)
+    if [[ -n "$mt_local_ip" && -n "$mt_public_ip" && "$mt_local_ip" != "$mt_public_ip" ]]; then
+        mt_nat_arg="--nat-info ${mt_local_ip}:${mt_public_ip}"
+        log "NAT обнаружен: ${mt_local_ip} → ${mt_public_ip}, добавляем --nat-info"
+    fi
+
     # Config file (TOML)
     # direct = true: подключается напрямую к Telegram DC без ME relay
     # domain: Fake-TLS маскировка — трафик неотличим от HTTPS к реальному сайту
@@ -106,7 +116,7 @@ Type=simple
 User=${mt_user}
 Group=${mt_user}
 WorkingDirectory=${mt_repo_dir}
-ExecStart=${mt_binary} --config ${mt_conf_dir}/config.toml --allow-skip-dh
+ExecStart=${mt_binary} --config ${mt_conf_dir}/config.toml --allow-skip-dh ${mt_nat_arg}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
