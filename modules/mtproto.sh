@@ -40,10 +40,22 @@ module_mtproto_install() {
     apt-get install -y curl jq tar
 
     mkdir -p "$mt_repo_dir" "$mt_conf_dir"
-    
+
+    local arch
+    case "$(uname -m)" in
+        x86_64)  arch="linux-amd64" ;;
+        aarch64) arch="linux-arm64" ;;
+        armv7l)  arch="linux-armv7" ;;
+        armv6l)  arch="linux-armv6" ;;
+        *)
+            error "Неподдерживаемая архитектура: $(uname -m)"
+            return 1
+            ;;
+    esac
+
     local latest_tag tarball_url
     latest_tag=$(curl -fsSL https://api.github.com/repos/9seconds/mtg/releases/latest | jq -r .tag_name)
-    tarball_url="https://github.com/9seconds/mtg/releases/download/${latest_tag}/mtg-${latest_tag#v}-linux-amd64.tar.gz"
+    tarball_url="https://github.com/9seconds/mtg/releases/download/${latest_tag}/mtg-${latest_tag#v}-${arch}.tar.gz"
     
     log "Загрузка mtg ${latest_tag}..."
     curl -fsSL "$tarball_url" -o "${mt_repo_dir}/mtg.tar.gz"
@@ -71,6 +83,7 @@ module_mtproto_install() {
     cat > "${mt_conf_dir}/mtg.toml" <<EOF
 secret = "${mt_raw_secret}"
 bind-to = "0.0.0.0:${mt_port}"
+prefer-ip = "prefer-ipv4"
 EOF
     chmod 600 "${mt_conf_dir}/mtg.toml"
     chown "$mt_user:$mt_user" "${mt_conf_dir}/mtg.toml"

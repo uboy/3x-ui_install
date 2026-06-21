@@ -90,7 +90,7 @@ journalctl -u mtproxy -f
 ss -tlnp | grep mtg
 
 # Проверка версии
-/opt/mtproxy/mtg version
+/opt/mtproxy/mtg -v
 ```
 
 ---
