@@ -8,8 +8,9 @@ module_mtproto_install() {
     local mt_repo_dir="/opt/mtproxy"
     local mt_binary="${mt_repo_dir}/teleproxy"
     local mt_user="_mtproxy"
-    local mt_domain="${MTPROXY_DOMAIN:-$DOMAIN}"
-    [[ -n "$mt_domain" ]] || mt_domain="www.google.com"
+    # Fake-TLS masking domain must be an external popular domain, not the server's own
+    # domain — using the server's own domain creates a circular probe and reveals the proxy.
+    local mt_domain="${MTPROXY_DOMAIN:-www.google.com}"
 
     # Check for existing installation
     if systemctl is-active --quiet mtproxy 2>/dev/null || [[ -x "$mt_binary" ]] || [[ -x "/opt/mtproxy/mtg" ]] || [[ -x "/opt/mtproxy/objs/bin/mtproto-proxy" ]]; then
@@ -57,13 +58,20 @@ module_mtproto_install() {
     # Secret handling:
     # - MTPROXY_SECRET is stored as the full ee-secret (ee + 32hex_key + hex_domain)
     # - Teleproxy config needs just the 32-char hex key (16 bytes)
-    # - If we have a valid ee-secret from a previous install, extract the key from it.
-    local mt_ee_secret="${MTPROXY_SECRET:-}"
-    local mt_key=""
+    # - The domain encoded in the ee-secret MUST match the configured mt_domain.
+    # - If existing secret has a different domain, regenerate (key changes too) to stay in sync.
+    local mt_existing="${MTPROXY_SECRET:-}"
+    local mt_ee_secret="" mt_key=""
 
-    if [[ "$mt_ee_secret" =~ ^ee([a-f0-9]{32}) ]]; then
-        mt_key="${BASH_REMATCH[1]}"
-        log "Повторное использование существующего секрета."
+    if [[ "$mt_existing" =~ ^ee([a-f0-9]{32}) ]]; then
+        local mt_existing_key="${BASH_REMATCH[1]}"
+        # Rebuild ee-secret with the current domain from the existing key.
+        # This keeps the same 16-byte key but re-encodes the (possibly changed) domain.
+        local mt_domain_hex
+        mt_domain_hex=$(printf '%s' "$mt_domain" | od -An -tx1 | tr -d ' \n')
+        mt_ee_secret="ee${mt_existing_key}${mt_domain_hex}"
+        mt_key="$mt_existing_key"
+        log "Повторное использование существующего ключа, домен перекодирован на ${mt_domain}."
     else
         log "Генерация Fake-TLS секрета для домена ${mt_domain}..."
         local gen_output
