@@ -103,6 +103,14 @@ EOF
     chmod 600 "${mt_conf_dir}/config.toml"
     chown "$mt_user:$mt_user" "${mt_conf_dir}/config.toml"
 
+    # The service runs as an unprivileged user; binding a port below 1024
+    # (e.g. an explicitly chosen 443 on a dedicated IP) needs an explicit
+    # capability grant or the process exits immediately with EACCES.
+    local mt_cap_lines=""
+    if (( mt_port < 1024 )); then
+        mt_cap_lines=$'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n'
+    fi
+
     cat > /etc/systemd/system/mtproxy.service <<EOF
 [Unit]
 Description=Teleproxy MTProto Proxy
@@ -115,7 +123,7 @@ User=${mt_user}
 Group=${mt_user}
 WorkingDirectory=${mt_repo_dir}
 ExecStart=${mt_binary} --config ${mt_conf_dir}/config.toml
-Restart=on-failure
+${mt_cap_lines}Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
 
