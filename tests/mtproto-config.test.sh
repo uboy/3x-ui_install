@@ -28,6 +28,19 @@ assert_not_contains 'nat-info' "${ROOT_DIR}/modules/mtproto.sh"
 assert_not_contains 'PORT_MTPROXY:-443' "${ROOT_DIR}/modules/mtproto.sh"
 assert_not_contains 'PORT_MTPROXY:-443' "${ROOT_DIR}/install.sh"
 assert_not_contains 'PORT_MTPROXY:-443' "${ROOT_DIR}/lib/ui.sh"
+assert_not_contains 'releases/latest' "${ROOT_DIR}/modules/mtproto.sh"
+assert_contains 'MTPROXY_TELEPROXY_VERSION' "${ROOT_DIR}/modules/mtproto.sh"
+assert_contains 'SHA256SUMS' "${ROOT_DIR}/modules/mtproto.sh"
+assert_contains 'sha256sum' "${ROOT_DIR}/modules/mtproto.sh"
+assert_contains 'mtproxy-rollback' "${ROOT_DIR}/modules/mtproto.sh"
+
+# The destructive rm of the live install must happen strictly after the
+# checksum verification, not before it (a failed download/checksum must never
+# be able to wipe a working install).
+_checksum_line=$(grep -n 'Проверка целостности' "${ROOT_DIR}/modules/mtproto.sh" | head -1 | cut -d: -f1)
+_destructive_rm_line=$(grep -n 'rm -rf "\$mt_repo_dir" "\$mt_conf_dir"$' "${ROOT_DIR}/modules/mtproto.sh" | head -1 | cut -d: -f1)
+[[ -n "$_checksum_line" && -n "$_destructive_rm_line" ]] || fail "could not locate checksum-check or destructive-rm lines to order-check"
+(( _checksum_line < _destructive_rm_line )) || fail "destructive rm of the live install happens before (or without) checksum verification"
 assert_not_contains '"mtg\|mtproxy"' "${ROOT_DIR}/lib/ui.sh"
 
 # --- Regression guards: required fixes must stay in place ---
