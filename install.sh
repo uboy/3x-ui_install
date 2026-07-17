@@ -131,7 +131,27 @@ main() {
   [[ "${INSTALL_OPENCONNECT:-false}" == "true" ]] && USED_PORTS["${PORT_OPENCONNECT:-4443}"]="OpenConnect"
   [[ "${INSTALL_AMNEZIA:-false}" == "true" ]] && USED_PORTS["${PORT_AMNEZIA:-51820}"]="AmneziaWG"
   [[ "${INSTALL_DUMBPROXY:-false}" == "true" ]] && USED_PORTS["${PORT_DUMBPROXY:-8080}"]="Dumbproxy"
-  [[ "${INSTALL_MTPROXY:-false}" == "true" ]] && USED_PORTS["${PORT_MTPROXY:-8443}"]="MTProto"
+  if [[ "${INSTALL_MTPROXY:-false}" == "true" ]]; then
+    if [[ -n "${USED_PORTS[$PORT_MTPROXY]:-}" ]] || ! check_port_free "$PORT_MTPROXY"; then
+      if [[ "$PORT_MTPROXY" == "8443" && -z "${STATE_VALUES[PORT_MTPROXY]+x}" ]]; then
+        # Only the untouched default on a fresh install may be silently
+        # reassigned; an explicit choice or a value restored from a prior
+        # install is never auto-replaced (see mtproto_runbook.md).
+        MTPROXY_FALLBACK_PORT=""
+        if MTPROXY_FALLBACK_PORT=$(pick_free_port_from_candidates USED_PORTS 9443 2083 2087 2096); then
+          warn "Порт MTProto 8443 занят, выбран запасной порт ${MTPROXY_FALLBACK_PORT}/TCP."
+          PORT_MTPROXY="$MTPROXY_FALLBACK_PORT"
+        else
+          error "КОНФЛИКТ ПОРТОВ: порт MTProto 8443 и все запасные порты (9443, 2083, 2087, 2096) заняты. Укажите порт MTProto вручную и повторите установку."
+          exit 1
+        fi
+      else
+        error "КОНФЛИКТ ПОРТОВ: порт MTProto ${PORT_MTPROXY} уже занят (${USED_PORTS[$PORT_MTPROXY]:-другим процессом на хосте}). Это явно выбранный или сохранённый порт, поэтому он не заменяется автоматически — смените PORT_MTPROXY и повторите установку."
+        exit 1
+      fi
+    fi
+    USED_PORTS["$PORT_MTPROXY"]="MTProto"
+  fi
   
   # Если SSH_PORT изменен — проверяем конфликты
   if [[ "${SSH_PORT:-22}" != "22" ]]; then

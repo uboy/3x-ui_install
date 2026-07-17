@@ -97,6 +97,22 @@ port_in_use_by_pattern() {
   printf '%s\n' "$lines" | grep -qiE "$pattern"
 }
 
+pick_free_port_from_candidates() {
+  # Usage: pick_free_port_from_candidates USED_PORTS_ARRAY_NAME CANDIDATE...
+  # Prints the first candidate that is neither a key in the named associative
+  # array nor already listening on the host; returns 1 if none qualify.
+  local -n _used_ports_ref="$1"
+  shift
+  local candidate
+  for candidate in "$@"; do
+    [[ -n "${_used_ports_ref[$candidate]:-}" ]] && continue
+    check_port_free "$candidate" || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
 generate_random_fixed() {
   local length="${1:-}"
   local charset="${2:-}"
