@@ -3,7 +3,7 @@
 module_mtproto_install() {
     [[ "${INSTALL_MTPROXY:-false}" == "true" ]] || return 0
 
-    local mt_port="${PORT_MTPROXY:-443}"
+    local mt_port="${PORT_MTPROXY:-8443}"
     local mt_conf_dir="/etc/mtproxy"
     local mt_repo_dir="/opt/mtproxy"
     local mt_binary="${mt_repo_dir}/teleproxy"

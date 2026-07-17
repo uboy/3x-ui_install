@@ -98,7 +98,7 @@ main() {
   resolve_var PORT_OPENCONNECT   "4443"
   resolve_var PORT_AMNEZIA       "51820"
   resolve_var PORT_DUMBPROXY     "8080"
-  resolve_var PORT_MTPROXY       "443"
+  resolve_var PORT_MTPROXY       "8443"
   resolve_var PORT_MTPROXY_STATS "8888"
   resolve_var INSTALL_DUMBPROXY "false"
   resolve_var INSTALL_MTPROXY   "false"
@@ -131,7 +131,7 @@ main() {
   [[ "${INSTALL_OPENCONNECT:-false}" == "true" ]] && USED_PORTS["${PORT_OPENCONNECT:-4443}"]="OpenConnect"
   [[ "${INSTALL_AMNEZIA:-false}" == "true" ]] && USED_PORTS["${PORT_AMNEZIA:-51820}"]="AmneziaWG"
   [[ "${INSTALL_DUMBPROXY:-false}" == "true" ]] && USED_PORTS["${PORT_DUMBPROXY:-8080}"]="Dumbproxy"
-  [[ "${INSTALL_MTPROXY:-false}" == "true" ]] && USED_PORTS["${PORT_MTPROXY:-443}"]="MTProto"
+  [[ "${INSTALL_MTPROXY:-false}" == "true" ]] && USED_PORTS["${PORT_MTPROXY:-8443}"]="MTProto"
   
   # Если SSH_PORT изменен — проверяем конфликты
   if [[ "${SSH_PORT:-22}" != "22" ]]; then

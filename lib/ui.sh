@@ -289,7 +289,7 @@ ui_get_ports() {
     [[ "${INSTALL_MTPROXY:-false}" == "true" ]] && {
         _labels+=("Порт MTProto (TCP):")
         _vars+=(PORT_MTPROXY)
-        _defaults+=("${PORT_MTPROXY:-443}")
+        _defaults+=("${PORT_MTPROXY:-8443}")
     }
 
     [[ ${#_vars[@]} -eq 0 ]] && return 0
@@ -421,7 +421,7 @@ ui_final_report() {
     report="${report}Порт OpenConnect: ${PORT_OPENCONNECT:-4443}\n"
     report="${report}Порт AmneziaWG: ${PORT_AMNEZIA:-51820}\n"
     report="${report}Порт Dumbproxy: ${PORT_DUMBPROXY:-8080}\n"
-    report="${report}Порт MTProto: ${PORT_MTPROXY:-443}\n\n"
+    report="${report}Порт MTProto: ${PORT_MTPROXY:-8443}\n\n"
 
     report="${report}${BLUE}${BOLD}--- ОБЩИЕ ДАННЫЕ СЕРВЕРА ---${NC}\n"
     if [[ "${INSTALL_MODE:-}" == "super-secure" ]]; then
@@ -495,9 +495,9 @@ ui_final_report() {
 
     if [[ "$INSTALL_MTPROXY" == "true" ]]; then
         report="${report}${BLUE}${BOLD}--- MTProto (Telegram Proxy) ---${NC}\n"
-        report="${report}Сервер: ${DOMAIN}:${PORT_MTPROXY:-443}\n"
+        report="${report}Сервер: ${DOMAIN}:${PORT_MTPROXY:-8443}\n"
         report="${report}Секрет: ${MTPROXY_SECRET}\n"
-        report="${report}Ссылка Telegram: tg://proxy?server=${DOMAIN}&port=${PORT_MTPROXY:-443}&secret=${MTPROXY_SECRET}\n\n"
+        report="${report}Ссылка Telegram: tg://proxy?server=${DOMAIN}&port=${PORT_MTPROXY:-8443}&secret=${MTPROXY_SECRET}\n\n"
     elif [[ "$INSTALL_MTPROXY" == "skipped" ]]; then
         report="${report}${YELLOW}--- MTProto (Пропущено) ---${NC}\n\n"
     fi
