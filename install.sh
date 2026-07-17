@@ -103,6 +103,7 @@ main() {
   resolve_var INSTALL_DUMBPROXY "false"
   resolve_var INSTALL_MTPROXY   "false"
   resolve_var MTPROXY_SECRET    ""
+  resolve_var MTPROXY_DOMAIN    ""
 
   if ! command -v whiptail &>/dev/null; then
     log "Установка whiptail (интерактивный интерфейс)..."
@@ -117,6 +118,7 @@ main() {
   ui_get_hardening_info
   ui_get_panel_exposure_info
   ui_get_ports
+  ui_get_mtproto_domain
 
   log "Шаг 3: Подтверждение и начало установки..."
   ui_confirm_install

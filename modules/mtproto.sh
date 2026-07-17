@@ -10,7 +10,14 @@ module_mtproto_install() {
     local mt_user="_mtproxy"
     # Fake-TLS masking domain must be an external popular domain, not the server's own
     # domain — using the server's own domain creates a circular probe and reveals the proxy.
-    local mt_domain="${MTPROXY_DOMAIN:-www.google.com}"
+    local mt_domain="${MTPROXY_DOMAIN:-}"
+    if [[ -z "$mt_domain" ]]; then
+        mt_domain="www.google.com"
+        warn "MTPROXY_DOMAIN не задан — используется резервный домен ${mt_domain}. Задайте MTPROXY_DOMAIN явно (через UI) для маскировки, правдоподобной для IP/ASN этого сервера."
+    fi
+    if [[ -n "${DOMAIN:-}" && "$mt_domain" == "${DOMAIN}" ]]; then
+        warn "MTPROXY_DOMAIN совпадает с DOMAIN сервера (${DOMAIN}) — это создаёт circular-probe и может выдать прокси."
+    fi
 
     # Check for existing installation
     if systemctl is-active --quiet mtproxy 2>/dev/null || [[ -x "$mt_binary" ]] || [[ -x "/opt/mtproxy/mtg" ]] || [[ -x "/opt/mtproxy/objs/bin/mtproto-proxy" ]]; then

@@ -380,6 +380,41 @@ ui_get_ports() {
     done
 }
 
+ui_get_mtproto_domain() {
+    [[ "${INSTALL_MTPROXY:-false}" == "true" ]] || return 0
+
+    local _default="${MTPROXY_DOMAIN:-}"
+    [[ -z "$_default" ]] && _default="www.google.com"
+
+    while true; do
+        local _domain
+        if ! _domain=$(whiptail --title "MTProto Fake-TLS" \
+            --inputbox "Домен для маскировки Fake-TLS.\nДолжен быть популярным внешним сайтом — НЕ доменом этого сервера." \
+            10 70 "$_default" 3>&1 1>&2 2>&3); then
+            exit 0
+        fi
+
+        if ! is_valid_domain "$_domain"; then
+            whiptail --title "Ошибка" --msgbox "Некорректный домен: '${_domain}'." 10 60
+            _default="$_domain"
+            continue
+        fi
+
+        if [[ -n "${DOMAIN:-}" && "$_domain" == "$DOMAIN" ]]; then
+            if ! whiptail --title "Предупреждение" --yesno \
+                "Домен маскировки совпадает с доменом этого сервера (${DOMAIN}).\nЭто создаёт circular-probe и может выдать прокси.\n\nВсё равно продолжить с этим доменом?" \
+                12 70; then
+                _default="$_domain"
+                continue
+            fi
+        fi
+
+        MTPROXY_DOMAIN="$_domain"
+        save_install_state
+        return 0
+    done
+}
+
 ui_confirm_install() {
     if whiptail --title "Aegis VPN Toolbox" --yesno "Начать установку выбранных компонентов?" 10 60; then
         return 0
