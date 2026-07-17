@@ -532,7 +532,12 @@ ui_final_report() {
         report="${report}${BLUE}${BOLD}--- MTProto (Telegram Proxy) ---${NC}\n"
         report="${report}Сервер: ${DOMAIN}:${PORT_MTPROXY:-8443}\n"
         report="${report}Секрет: ${MTPROXY_SECRET}\n"
-        report="${report}Ссылка Telegram: tg://proxy?server=${DOMAIN}&port=${PORT_MTPROXY:-8443}&secret=${MTPROXY_SECRET}\n\n"
+        if [[ -n "${DOMAIN:-}" ]]; then
+            report="${report}Ссылка Telegram: $(mtproto_proxy_link_tg "$DOMAIN" "${PORT_MTPROXY:-8443}" "$MTPROXY_SECRET")\n"
+            report="${report}Эквивалент: $(mtproto_proxy_link_https "$DOMAIN" "${PORT_MTPROXY:-8443}" "$MTPROXY_SECRET")\n\n"
+        else
+            report="${report}${YELLOW}Ссылка Telegram недоступна: DOMAIN не задан.${NC}\n\n"
+        fi
     elif [[ "$INSTALL_MTPROXY" == "skipped" ]]; then
         report="${report}${YELLOW}--- MTProto (Пропущено) ---${NC}\n\n"
     fi

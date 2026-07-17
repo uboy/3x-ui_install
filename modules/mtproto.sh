@@ -217,6 +217,23 @@ EOF
         firewall_allow "$mt_port" tcp
         success "MTProto Proxy (Teleproxy ${mt_version}) запущен и слушает порт ${mt_port}/TCP."
         [[ -n "$mt_backup_dir" ]] && rm -rf "$mt_backup_dir"
+
+        # The client-facing link needs the server's real public IP/hostname —
+        # DOMAIN, never MTPROXY_DOMAIN (that's the Fake-TLS masking SNI value,
+        # not an address this host actually answers on).
+        local mt_public_host="${DOMAIN:-}"
+        if [[ -z "$mt_public_host" ]]; then
+            error "DOMAIN (публичный адрес сервера) не задан — proxy-ссылку построить нельзя. Задайте DOMAIN (домен или IP) и перезапустите установку MTProto."
+        else
+            local mt_tg_link mt_https_link
+            mt_tg_link=$(mtproto_proxy_link_tg "$mt_public_host" "$mt_port" "$mt_ee_secret")
+            mt_https_link=$(mtproto_proxy_link_https "$mt_public_host" "$mt_port" "$mt_ee_secret")
+            echo ""
+            echo "===== MTProto Proxy — ссылка для подключения ====="
+            echo "$mt_tg_link"
+            echo "(эквивалент: $mt_https_link)"
+            echo "===================================================="
+        fi
         return 0
     fi
 

@@ -55,6 +55,18 @@ assert_contains 'pick_free_port_from_candidates' "${ROOT_DIR}/install.sh"
 assert_contains 'hex_decode_ascii' "${ROOT_DIR}/lib/utils.sh"
 assert_contains 'teleproxy' "${ROOT_DIR}/lib/ui.sh"
 
+# --- Regression guards: client proxy-link must use the real public host,
+# never the Fake-TLS masking domain (MTPROXY_DOMAIN) ---
+
+assert_contains 'mtproto_proxy_link_tg' "${ROOT_DIR}/lib/utils.sh"
+assert_contains 'mtproto_proxy_link_https' "${ROOT_DIR}/lib/utils.sh"
+assert_contains 'mtproto_proxy_link_tg' "${ROOT_DIR}/modules/mtproto.sh"
+assert_contains 'mtproto_proxy_link_https' "${ROOT_DIR}/modules/mtproto.sh"
+assert_contains 'mtproto_proxy_link_tg "\$mt_public_host"' "${ROOT_DIR}/modules/mtproto.sh"
+assert_not_contains 'mtproto_proxy_link_(tg|https) "\$mt_domain"' "${ROOT_DIR}/modules/mtproto.sh"
+assert_contains 'mt_public_host="\$\{DOMAIN:-\}"' "${ROOT_DIR}/modules/mtproto.sh"
+assert_contains 'mtproto_proxy_link_tg' "${ROOT_DIR}/lib/ui.sh"
+
 # --- Unit tests for the pure helpers in lib/utils.sh ---
 
 # Provide the small set of functions utils.sh's own definitions don't need
@@ -83,5 +95,21 @@ _picked=$(pick_free_port_from_candidates USED_PORTS 9443 2083 2087 2096)
 if pick_free_port_from_candidates USED_PORTS 9443 2083 >/dev/null; then
   fail "pick_free_port_from_candidates should have failed when no candidate is free"
 fi
+
+# mtproto_proxy_link_tg / mtproto_proxy_link_https: correct format, and fail
+# closed (non-zero, no output) when any required part is missing rather than
+# emitting a link with a blank/placeholder field.
+_tg=$(mtproto_proxy_link_tg "203.0.113.1" "2083" "ee1122334455667788112233445566778876f6f676c652e636f6d")
+[[ "$_tg" == "tg://proxy?server=203.0.113.1&port=2083&secret=ee1122334455667788112233445566778876f6f676c652e636f6d" ]] \
+  || fail "mtproto_proxy_link_tg produced unexpected output: '$_tg'"
+
+_https=$(mtproto_proxy_link_https "203.0.113.1" "2083" "ee1122334455667788112233445566778876f6f676c652e636f6d")
+[[ "$_https" == "https://t.me/proxy?server=203.0.113.1&port=2083&secret=ee1122334455667788112233445566778876f6f676c652e636f6d" ]] \
+  || fail "mtproto_proxy_link_https produced unexpected output: '$_https'"
+
+mtproto_proxy_link_tg "" "2083" "eeSECRET" >/dev/null 2>&1 && fail "mtproto_proxy_link_tg accepted an empty host"
+mtproto_proxy_link_tg "203.0.113.1" "" "eeSECRET" >/dev/null 2>&1 && fail "mtproto_proxy_link_tg accepted an empty port"
+mtproto_proxy_link_tg "203.0.113.1" "2083" "" >/dev/null 2>&1 && fail "mtproto_proxy_link_tg accepted an empty secret"
+mtproto_proxy_link_https "" "2083" "eeSECRET" >/dev/null 2>&1 && fail "mtproto_proxy_link_https accepted an empty host"
 
 echo "MTProto config checks passed."

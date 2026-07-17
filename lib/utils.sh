@@ -106,6 +106,26 @@ hex_decode_ascii() {
   printf '%b' "$out"
 }
 
+mtproto_proxy_link_tg() {
+  # Usage: mtproto_proxy_link_tg HOST PORT SECRET
+  # HOST must be the proxy's real public IP/hostname — never the Fake-TLS
+  # masking domain (MTPROXY_DOMAIN), which is a server-side SNI value only
+  # and does not resolve to this host. Same server/port/secret contract as
+  # teleproxy's own `link` subcommand (confirmed against upstream docs).
+  local host="$1" port="$2" secret="$3"
+  [[ -n "$host" && -n "$port" && -n "$secret" ]] || return 1
+  printf 'tg://proxy?server=%s&port=%s&secret=%s\n' "$host" "$port" "$secret"
+}
+
+mtproto_proxy_link_https() {
+  # Usage: mtproto_proxy_link_https HOST PORT SECRET
+  # https://t.me/proxy equivalent — the format teleproxy's own `link`
+  # subcommand emits natively. Same host/port/secret rules as above.
+  local host="$1" port="$2" secret="$3"
+  [[ -n "$host" && -n "$port" && -n "$secret" ]] || return 1
+  printf 'https://t.me/proxy?server=%s&port=%s&secret=%s\n' "$host" "$port" "$secret"
+}
+
 pick_free_port_from_candidates() {
   # Usage: pick_free_port_from_candidates USED_PORTS_ARRAY_NAME CANDIDATE...
   # Prints the first candidate that is neither a key in the named associative
