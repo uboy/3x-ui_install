@@ -97,6 +97,15 @@ port_in_use_by_pattern() {
   printf '%s\n' "$lines" | grep -qiE "$pattern"
 }
 
+hex_decode_ascii() {
+  local hex="$1" out="" i
+  (( ${#hex} % 2 == 0 )) || return 1
+  for (( i = 0; i < ${#hex}; i += 2 )); do
+    out+="\\x${hex:i:2}"
+  done
+  printf '%b' "$out"
+}
+
 pick_free_port_from_candidates() {
   # Usage: pick_free_port_from_candidates USED_PORTS_ARRAY_NAME CANDIDATE...
   # Prints the first candidate that is neither a key in the named associative

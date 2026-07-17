@@ -63,31 +63,37 @@ module_mtproto_install() {
     }
 
     # Secret handling:
-    # - MTPROXY_SECRET is stored as the full ee-secret (ee + 32hex_key + hex_domain)
-    # - Teleproxy config needs just the 32-char hex key (16 bytes)
-    # - The domain encoded in the ee-secret MUST match the configured mt_domain.
-    # - If existing secret has a different domain, regenerate (key changes too) to stay in sync.
+    # - MTPROXY_SECRET is stored as the full ee-secret (ee + 32hex_key + hex-encoded domain).
+    # - Teleproxy's [[secret]] key= wants just the 32-hex key; the domain is configured
+    #   separately via the top-level `domain =` TOML key above.
+    # - Only rotate (generate a brand-new key) when the disguise domain actually changes.
+    #   An unchanged domain must reuse the exact stored secret untouched — reinstalling
+    #   should not invalidate proxy links already handed out.
     local mt_existing="${MTPROXY_SECRET:-}"
     local mt_ee_secret="" mt_key=""
+    local mt_existing_key="" mt_existing_domain=""
 
-    if [[ "$mt_existing" =~ ^ee([a-f0-9]{32}) ]]; then
-        local mt_existing_key="${BASH_REMATCH[1]}"
-        # Rebuild ee-secret with the current domain from the existing key.
-        # This keeps the same 16-byte key but re-encodes the (possibly changed) domain.
-        local mt_domain_hex
-        mt_domain_hex=$(printf '%s' "$mt_domain" | od -An -tx1 | tr -d ' \n')
-        mt_ee_secret="ee${mt_existing_key}${mt_domain_hex}"
+    if [[ "$mt_existing" =~ ^ee([a-f0-9]{32})([a-f0-9]*)$ ]]; then
+        mt_existing_key="${BASH_REMATCH[1]}"
+        [[ -n "${BASH_REMATCH[2]}" ]] && mt_existing_domain=$(hex_decode_ascii "${BASH_REMATCH[2]}")
+    fi
+
+    if [[ -n "$mt_existing_key" && "$mt_existing_domain" == "$mt_domain" ]]; then
+        mt_ee_secret="$mt_existing"
         mt_key="$mt_existing_key"
-        log "Повторное использование существующего ключа, домен перекодирован на ${mt_domain}."
+        log "Домен маскировки не изменился, секрет не тронут."
     else
+        [[ -n "$mt_existing_key" ]] && log "Домен маскировки изменился (${mt_existing_domain:-<нет>} → ${mt_domain}), ротация секрета..."
         log "Генерация Fake-TLS секрета для домена ${mt_domain}..."
-        local gen_output
-        gen_output=$("$mt_binary" generate-secret "$mt_domain")
-        # First line is the full ee-secret for the tg:// URL
-        mt_ee_secret=$(echo "$gen_output" | head -1)
-        # Extract the 32-hex key (after "ee" prefix, before hex domain)
-        mt_key=$(echo "$gen_output" | awk '/Secret for -S:/{print $NF}')
-        [[ -n "$mt_ee_secret" && -n "$mt_key" ]] || { error "Не удалось сгенерировать секрет"; return 1; }
+        # "Secret for -S:" goes to stderr; the ee-secret itself is the only stdout line.
+        # Derive the raw key from the ee-secret directly instead of parsing stderr.
+        mt_ee_secret=$("$mt_binary" generate-secret "$mt_domain" 2>/dev/null)
+        if [[ "$mt_ee_secret" =~ ^ee([a-f0-9]{32}) ]]; then
+            mt_key="${BASH_REMATCH[1]}"
+        else
+            error "Не удалось сгенерировать секрет"
+            return 1
+        fi
     fi
     MTPROXY_SECRET="${mt_ee_secret}"
 
