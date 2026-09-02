@@ -14,7 +14,7 @@ for f in common.sh state.sh utils.sh ui.sh firewall.sh cert.sh; do
 done
 
 # Source modules
-for f in base.sh hardening.sh xui.sh openvpn.sh openconnect.sh amnezia.sh dumbproxy.sh mtproto.sh; do
+for f in base.sh hardening.sh xui.sh openvpn.sh openconnect.sh amnezia.sh dumbproxy.sh mtproto.sh tproxy_server.sh; do
     if [[ ! -f "${SCRIPT_DIR}/modules/$f" ]]; then
         echo "ERROR: Module ${SCRIPT_DIR}/modules/$f not found!"
         exit 1
@@ -102,8 +102,10 @@ main() {
   resolve_var PORT_MTPROXY_STATS "8888"
   resolve_var INSTALL_DUMBPROXY "false"
   resolve_var INSTALL_MTPROXY   "false"
+  resolve_var INSTALL_TPROXY    "false"
   resolve_var MTPROXY_SECRET    ""
   resolve_var MTPROXY_DOMAIN    ""
+  resolve_var TPROXY_DOMAIN     ""
 
   if ! command -v whiptail &>/dev/null; then
     log "Установка whiptail (интерактивный интерфейс)..."
@@ -197,6 +199,7 @@ main() {
   if [[ "$INSTALL_AMNEZIA" == "true" ]]; then module_amnezia_install; fi
   if [[ "$INSTALL_DUMBPROXY" == "true" ]]; then module_dumbproxy_install; fi
   if [[ "$INSTALL_MTPROXY" == "true" ]]; then module_mtproto_install; fi
+  if [[ "$INSTALL_TPROXY" == "true" ]]; then module_tproxy_server_install; fi
 
   log "Шаг 7: Настройка фаервола..."
   firewall_allow "${SSH_PORT:-22}"
