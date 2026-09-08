@@ -84,6 +84,22 @@ EOF
   # Переносим конфигурацию в wireguard
   cp wgcf-profile.conf /etc/wireguard/warp.conf
   
+  # Создание автообновлятора IP-адресов
+  log "Настройка еженедельного автообновления IP-адресов Google..."
+  local CRON_SCRIPT="/usr/local/bin/warp_update_ips.sh"
+  cat << 'EOF' > "$CRON_SCRIPT"
+#!/usr/bin/env bash
+TELEGRAM_IPS="91.105.192.0/23, 91.108.4.0/22, 91.108.8.0/22, 91.108.12.0/22, 91.108.16.0/22, 91.108.20.0/22, 91.108.56.0/22, 149.154.160.0/20, 185.76.151.0/24"
+GOOGLE_IPS=$(curl -sSLf https://www.gstatic.com/ipranges/goog.json | grep -o '"ipv4Prefix": "[^"]*"' | cut -d '"' -f 4 | paste -sd, -)
+if [[ -n "$GOOGLE_IPS" ]]; then
+  ALL_IPS="${TELEGRAM_IPS}, ${GOOGLE_IPS}"
+  sed -i "s|^AllowedIPs.*|AllowedIPs = $ALL_IPS|" /etc/wireguard/warp.conf
+  systemctl restart wg-quick@warp
+fi
+EOF
+  chmod +x "$CRON_SCRIPT"
+  ln -sf "$CRON_SCRIPT" /etc/cron.weekly/warp_update_ips
+  
   popd >/dev/null
   rm -rf "$WORK_DIR"
 
