@@ -40,10 +40,18 @@ module_warp_telegram_install() {
     return 1
   fi
 
-  # Модификация конфига для Split Tunnel (Telegram IPs)
-  log "Настройка маршрутизации Telegram IPs через WARP..."
-  
   local TELEGRAM_IPS="91.105.192.0/23, 91.108.4.0/22, 91.108.8.0/22, 91.108.12.0/22, 91.108.16.0/22, 91.108.20.0/22, 91.108.56.0/22, 149.154.160.0/20, 185.76.151.0/24"
+  
+  # Динамически получаем IP-адреса Google (включая YouTube)
+  log "Получение актуальных IP-адресов Google/YouTube..."
+  local GOOGLE_IPS
+  if GOOGLE_IPS=$(curl -sSLf https://www.gstatic.com/ipranges/goog.json | grep -o '"ipv4Prefix": "[^"]*"' | cut -d '"' -f 4 | paste -sd, -); then
+    if [[ -n "$GOOGLE_IPS" ]]; then
+      TELEGRAM_IPS="${TELEGRAM_IPS}, ${GOOGLE_IPS}"
+    fi
+  else
+    warn "Не удалось получить IP-адреса Google. Обход DPI для YouTube может работать не полностью."
+  fi
   
   # Удаляем замену DNS
   sed -i 's/^DNS = /#DNS = /' wgcf-profile.conf
