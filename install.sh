@@ -14,7 +14,7 @@ for f in common.sh state.sh utils.sh ui.sh firewall.sh cert.sh; do
 done
 
 # Source modules
-for f in base.sh hardening.sh xui.sh openvpn.sh openconnect.sh amnezia.sh dumbproxy.sh mtproto.sh tproxy_server.sh; do
+for f in base.sh hardening.sh xui.sh openvpn.sh openconnect.sh amnezia.sh dumbproxy.sh mtproto.sh tproxy_server.sh warp_telegram.sh; do
     if [[ ! -f "${SCRIPT_DIR}/modules/$f" ]]; then
         echo "ERROR: Module ${SCRIPT_DIR}/modules/$f not found!"
         exit 1
@@ -55,6 +55,8 @@ main() {
   INSTALL_AMNEZIA="false"
   INSTALL_DUMBPROXY="false"
   INSTALL_MTPROXY="false"
+  INSTALL_TPROXY="false"
+  INSTALL_WARP_TELEGRAM="false"
   INSTALL_HARDENING="false"
   INSTALL_MODE=""
   SSH_PORT=""
@@ -103,6 +105,7 @@ main() {
   resolve_var INSTALL_DUMBPROXY "false"
   resolve_var INSTALL_MTPROXY   "false"
   resolve_var INSTALL_TPROXY    "false"
+  resolve_var INSTALL_WARP_TELEGRAM "false"
   resolve_var MTPROXY_SECRET    ""
   resolve_var MTPROXY_DOMAIN    ""
   resolve_var TPROXY_DOMAIN     ""
@@ -200,6 +203,7 @@ main() {
   if [[ "$INSTALL_DUMBPROXY" == "true" ]]; then module_dumbproxy_install; fi
   if [[ "$INSTALL_MTPROXY" == "true" ]]; then module_mtproto_install; fi
   if [[ "$INSTALL_TPROXY" == "true" ]]; then module_tproxy_server_install; fi
+  if [[ "$INSTALL_WARP_TELEGRAM" == "true" ]]; then module_warp_telegram_install; fi
 
   log "Шаг 7: Настройка фаервола..."
   firewall_allow "${SSH_PORT:-22}"

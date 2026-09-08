@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+
+module_warp_telegram_install() {
+  log "Установка Cloudflare WARP (через wgcf) для обхода DPI для Telegram..."
+
+  # Установка wireguard-tools, если еще не установлен
+  if ! command -v wg-quick &>/dev/null; then
+    apt-get update
+    apt-get install -y --no-install-recommends wireguard-tools resolvconf
+  fi
+
+  local WORK_DIR="/tmp/warp_telegram_install"
+  mkdir -p "$WORK_DIR"
+  pushd "$WORK_DIR" >/dev/null
+
+  # Скачивание wgcf
+  log "Скачивание wgcf..."
+  curl -sSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64"
+  chmod +x wgcf
+
+  # Регистрация и генерация конфига
+  log "Регистрация устройства в Cloudflare WARP..."
+  ./wgcf register --accept-tos >/dev/null
+  ./wgcf generate >/dev/null
+
+  if [[ ! -f wgcf-profile.conf ]]; then
+    error "Не удалось сгенерировать конфигурацию WARP."
+    popd >/dev/null
+    return 1
+  fi
+
+  # Модификация конфига для Split Tunnel (Telegram IPs)
+  log "Настройка маршрутизации Telegram IPs через WARP..."
+  
+  local TELEGRAM_IPS="95.161.64.0/20, 5.28.192.0/18, 91.105.192.0/23, 91.108.4.0/22, 91.108.8.0/22, 91.108.12.0/22, 91.108.16.0/22, 91.108.20.0/22, 91.108.56.0/22, 149.154.160.0/20, 185.76.151.0/24"
+  
+  # Удаляем замену DNS
+  sed -i 's/^DNS = /#DNS = /' wgcf-profile.conf
+  
+  # Заменяем дефолтный маршрут на список IP адресов Телеграма
+  sed -i "s|AllowedIPs = 0.0.0.0/0|AllowedIPs = $TELEGRAM_IPS|" wgcf-profile.conf
+  
+  # Удаляем IPv6 из WARP (предотвращаем ошибки IPv6/таймауты)
+  sed -i '/Address = 2606:/d' wgcf-profile.conf
+  sed -i '/AllowedIPs = ::\/0/d' wgcf-profile.conf
+  
+  # Добавляем MASQUERADE для локальных VPN клиентов
+  sed -i '/^MTU = /a PostUp = iptables -t nat -I POSTROUTING -o warp -j MASQUERADE\nPostDown = iptables -t nat -D POSTROUTING -o warp -j MASQUERADE' wgcf-profile.conf
+  
+  # Блокировка IPv6 для Telegram в ядре (чтобы клиенты моментально фоллбэчились на IPv4)
+  # Пишем скрипт, который будет стартовать вместе с интерфейсом
+  local IPV6_BLOCK_SCRIPT="/usr/local/bin/telegram_ipv6_block.sh"
+  cat << 'EOF' > "$IPV6_BLOCK_SCRIPT"
+#!/usr/bin/env bash
+for ip in 2001:b28:f23d::/48 2001:b28:f23f::/48 2001:67c:4e8::/48 2001:b28:f23c::/48 2a0a:f280::/32; do
+  ip -6 route add blackhole "$ip" 2>/dev/null || true
+done
+EOF
+  chmod +x "$IPV6_BLOCK_SCRIPT"
+  "$IPV6_BLOCK_SCRIPT" # Выполняем сразу
+  
+  # Добавляем вызов скрипта блокировки в PostUp
+  sed -i "s|PostUp = .*|&\nPostUp = $IPV6_BLOCK_SCRIPT|" wgcf-profile.conf
+
+  # Переносим конфигурацию в wireguard
+  cp wgcf-profile.conf /etc/wireguard/warp.conf
+  
+  popd >/dev/null
+  rm -rf "$WORK_DIR"
+
+  # Запуск WireGuard интерфейса
+  systemctl enable --now wg-quick@warp
+  
+  if ip link show warp >/dev/null 2>&1; then
+    success "Туннель WARP для обхода DPI Telegram успешно настроен и запущен."
+  else
+    error "Не удалось поднять интерфейс WARP."
+  fi
+}
