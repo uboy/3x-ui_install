@@ -15,13 +15,24 @@ module_warp_telegram_install() {
 
   # Скачивание wgcf
   log "Скачивание wgcf..."
-  curl -sSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64"
+  curl -sSLf -o wgcf "https://github.com/ViRb3/wgcf/releases/download/v2.2.32/wgcf_2.2.32_linux_amd64" || {
+    error "Не удалось скачать wgcf."
+    popd >/dev/null
+    return 1
+  }
   chmod +x wgcf
 
   # Регистрация и генерация конфига
-  log "Регистрация устройства в Cloudflare WARP..."
-  ./wgcf register --accept-tos >/dev/null
-  ./wgcf generate >/dev/null
+  if [[ -f /etc/wireguard/wgcf-account.toml ]]; then
+    log "Аккаунт WARP уже существует, используем его..."
+    cp /etc/wireguard/wgcf-account.toml ./wgcf-account.toml
+    ./wgcf generate >/dev/null
+  else
+    log "Регистрация устройства в Cloudflare WARP..."
+    ./wgcf register --accept-tos >/dev/null
+    ./wgcf generate >/dev/null
+    cp wgcf-account.toml /etc/wireguard/wgcf-account.toml
+  fi
 
   if [[ ! -f wgcf-profile.conf ]]; then
     error "Не удалось сгенерировать конфигурацию WARP."
@@ -32,7 +43,7 @@ module_warp_telegram_install() {
   # Модификация конфига для Split Tunnel (Telegram IPs)
   log "Настройка маршрутизации Telegram IPs через WARP..."
   
-  local TELEGRAM_IPS="95.161.64.0/20, 5.28.192.0/18, 91.105.192.0/23, 91.108.4.0/22, 91.108.8.0/22, 91.108.12.0/22, 91.108.16.0/22, 91.108.20.0/22, 91.108.56.0/22, 149.154.160.0/20, 185.76.151.0/24"
+  local TELEGRAM_IPS="91.105.192.0/23, 91.108.4.0/22, 91.108.8.0/22, 91.108.12.0/22, 91.108.16.0/22, 91.108.20.0/22, 91.108.56.0/22, 149.154.160.0/20, 185.76.151.0/24"
   
   # Удаляем замену DNS
   sed -i 's/^DNS = /#DNS = /' wgcf-profile.conf
@@ -59,8 +70,8 @@ EOF
   chmod +x "$IPV6_BLOCK_SCRIPT"
   "$IPV6_BLOCK_SCRIPT" # Выполняем сразу
   
-  # Добавляем вызов скрипта блокировки в PostUp
-  sed -i "s|PostUp = .*|&\nPostUp = $IPV6_BLOCK_SCRIPT|" wgcf-profile.conf
+  # Добавляем вызов скрипта блокировки в PostUp, сразу после первого PostUp (MASQUERADE)
+  sed -i "/^PostUp = iptables/a PostUp = $IPV6_BLOCK_SCRIPT" wgcf-profile.conf
 
   # Переносим конфигурацию в wireguard
   cp wgcf-profile.conf /etc/wireguard/warp.conf
