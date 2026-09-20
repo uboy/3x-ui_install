@@ -3,153 +3,151 @@
 module_amnezia_install() {
     [[ "$INSTALL_AMNEZIA" == "true" ]] || return 0
 
-    AMN_DIR="/opt/amnezia"
+    log "Установка нативной версии AmneziaWG (Kernel Module + Tools)..."
 
-    # Проверка наличия модуля ядра wireguard
-    if ! modprobe wireguard 2>/dev/null && ! lsmod | grep -q wireguard; then
-        warn "Модуль wireguard не обнаружен. AmneziaWG может не запуститься."
+    local old_umask
+    old_umask=$(umask)
+    umask 077 # Защита от TOCTOU: файлы создаются с правами 600 (drwx------)
+
+    # Очистка старой docker-установки (если была)
+    local AMN_DOCKER_DIR="/opt/amnezia"
+    if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' | grep -q "^amneziawg$"; then
+        log "Удаление старой Docker-версии AmneziaWG..."
+        cd "$AMN_DOCKER_DIR" || true
+        docker compose down -v 2>/dev/null || true
+        cd - >/dev/null || true
+        rm -rf "$AMN_DOCKER_DIR"
     fi
 
-    # Очистка
-    if docker ps -a --format '{{.Names}}' | grep -q "^amneziawg$"; then
-        if ! ui_ask_reinstall "AmneziaWG"; then
-            log "Пропуск установки AmneziaWG."
-            INSTALL_AMNEZIA="skipped"
-            return 0
-        fi
-        log "Удаление старой установки..."
-        cd "$AMN_DIR" && docker compose down -v 2>/dev/null || true
-        rm -rf "$AMN_DIR"
+    # Установка PPA и пакетов
+    if ! dpkg-query -W -f='${Status}' amneziawg-tools 2>/dev/null | grep -q "ok installed"; then
+        log "Добавление репозитория ppa:amnezia/ppa..."
+        apt-get install -y software-properties-common
+        add-apt-repository -y ppa:amnezia/ppa || { umask "$old_umask"; error "Не удалось добавить PPA amnezia"; return 1; }
+        apt-get update
+        apt-get install -y amneziawg-tools amneziawg-dkms || { umask "$old_umask"; error "Не удалось установить пакеты amneziawg"; return 1; }
     fi
 
-    log "Установка AmneziaWG (Aegis Multi-Image Loader)..."
-    mkdir -p "$AMN_DIR"
-    
-    # Список образов для перебора (от самого надежного к запасному)
-    local images=("nikolaydyadya/amnezia-wg:latest" "amneziavpn/amnezia-wg:master" "pantonis/amnezia-wg:latest")
-    local working_image=""
+    local AWG_DIR="/etc/amneziawg"
+    mkdir -p "$AWG_DIR"
+    mkdir -p "${AWG_DIR}/clients"
 
-    for img in "${images[@]}"; do
-        log "Попытка использовать образ: $img..."
-        # Skip pull if image is already cached locally
-        if ! docker image inspect "$img" >/dev/null 2>&1; then
-            docker pull "$img" || { warn "Не удалось загрузить образ $img"; continue; }
+    local PORT=${PORT_AMNEZIA:-51820}
+
+    if [[ -f "${AWG_DIR}/awg0.conf" ]]; then
+        log "Конфигурация AmneziaWG уже существует (${AWG_DIR}/awg0.conf), пропускаем генерацию."
+    else
+        log "Генерация серверных ключей..."
+        local private_key
+        private_key=$(awg genkey)
+        local public_key
+        public_key=$(echo "$private_key" | awg pubkey)
+
+        # Определяем внешний интерфейс для NAT
+        local ext_if
+        ext_if=$(ip -4 route ls | grep default | awk '{print $5}' | head -1)
+        if [[ -z "$ext_if" ]]; then
+            ext_if="eth0"
         fi
-        if docker run --rm "$img" which awg >/dev/null 2>&1; then
-            working_image="$img"
-            success "Найден рабочий образ AmneziaWG: $img"
-            break
-        fi
-        warn "Образ $img не подходит или не доступен."
-    done
+        
+        # Генерация параметров обфускации
+        # Jmax снижен до 256 для предотвращения фрагментации UDP пакетов при MTU 1420
+        local jc=$(shuf -i 3-10 -n 1)
+        local jmin=$(shuf -i 15-50 -n 1)
+        local jmax=$(shuf -i 51-256 -n 1)
+        local s1=$(shuf -i 15-150 -n 1)
+        local s2=$(shuf -i 15-150 -n 1)
+        
+        # H1-H4 используют полный диапазон 32-битного INT для максимизации энтропии первого байта
+        local h1=$(shuf -i 1-2147483647 -n 1)
+        local h2=$(shuf -i 1-2147483647 -n 1)
+        local h3=$(shuf -i 1-2147483647 -n 1)
+        local h4=$(shuf -i 1-2147483647 -n 1)
 
-    if [[ -z "$working_image" ]]; then
-        error "Не удалось найти рабочий Docker-образ AmneziaWG. Проверьте интернет или доступ к Docker Hub."
-        return 1
-    fi
-
-    log "Генерация ключей..."
-    local private_key
-    private_key=$(docker run --rm --entrypoint "awg" "$working_image" genkey)
-    local public_key
-    public_key=$(printf '%s' "$private_key" | docker run --rm -i --entrypoint "awg" "$working_image" pubkey)
-    
-    log "Создание конфигурации..."
-    cat > "${AMN_DIR}/amneziawg.conf" <<EOF
+        log "Создание конфигурации awg0..."
+        cat > "${AWG_DIR}/awg0.conf" <<EOF
 [Interface]
 PrivateKey = $private_key
-Address = 10.8.0.1/24
-ListenPort = ${PORT_AMNEZIA:-51820}
-J1 = $(shuf -i 10-100 -n 1)
-J2 = $(shuf -i 10-100 -n 1)
-S1 = $(shuf -i 10-100 -n 1)
-S2 = $(shuf -i 10-100 -n 1)
-H1 = $(shuf -i 10000000-99999999 -n 1)
-H2 = $(shuf -i 10000000-99999999 -n 1)
-H3 = $(shuf -i 10000000-99999999 -n 1)
-H4 = $(shuf -i 10000000-99999999 -n 1)
-EOF
-    chmod 600 "${AMN_DIR}/amneziawg.conf"
+Address = 10.99.0.1/24
+ListenPort = $PORT
+Jc = $jc
+Jmin = $jmin
+Jmax = $jmax
+S1 = $s1
+S2 = $s2
+H1 = $h1
+H2 = $h2
+H3 = $h3
+H4 = $h4
 
-    # Docker Compose
-    cat > "${AMN_DIR}/docker-compose.yml" <<EOF
-services:
-  amneziawg:
-    image: $working_image
-    container_name: amneziawg
-    privileged: true
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    volumes:
-      - ./amneziawg.conf:/etc/wireguard/wg0.conf
-    # Используем awg-quick для запуска
-    entrypoint: /bin/sh -c "awg-quick up wg0 && tail -f /dev/null"
-    ports:
-      - "${PORT_AMNEZIA:-51820}:${PORT_AMNEZIA:-51820}/udp"
-    restart: unless-stopped
+PostUp = iptables -A FORWARD -i %i -o "$ext_if" -j ACCEPT; iptables -A FORWARD -i "$ext_if" -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -o "$ext_if" -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -o "$ext_if" -j ACCEPT; iptables -D FORWARD -i "$ext_if" -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -o "$ext_if" -j MASQUERADE
 EOF
 
-    log "Запуск контейнера..."
-    cd "$AMN_DIR"
-    docker compose up -d
-    
-    log "Ожидание запуска контейнера AmneziaWG..."
-    local _amn_attempts=0
-    until docker ps --format '{{.Names}} {{.Status}}' | grep "amneziawg" | grep -q "Up" \
-          || (( ++_amn_attempts >= 15 )); do
-        sleep 2
-    done
-    if (( _amn_attempts >= 15 )); then
-        error "Контейнер упал. Логи:"
-        docker logs amneziawg
-        return 1
-    fi
+        log "Создание клиентских конфигураций (3 клиента)..."
+        local endpoint
+        endpoint="${DOMAIN:-$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 api.ipify.org)}"
+        # Убираем возможные переносы строк из домена для предотвращения инъекций в конфиг
+        endpoint=$(echo "$endpoint" | tr -d '\r\n')
 
-    log "Создание клиента..."
-    local client_private_key
-    client_private_key=$(docker run --rm --entrypoint "awg" "$working_image" genkey)
-    local client_public_key
-    client_public_key=$(printf '%s' "$client_private_key" | docker run --rm -i --entrypoint "awg" "$working_image" pubkey)
-    
-    # Добавление пира через awg
-    docker exec amneziawg awg set wg0 peer "$client_public_key" allowed-ips 10.8.0.2/32
-    
-    log "Генерация amnezia_client.conf..."
-    cat > "${AMN_DIR}/amnezia_client.conf" <<EOF
+        for i in 1 2 3; do
+            local c_priv
+            c_priv=$(awg genkey)
+            local c_pub
+            c_pub=$(echo "$c_priv" | awg pubkey)
+            local c_psk
+            c_psk=$(awg genpsk)
+            local client_ip="10.99.0.$((i+1))"
+
+            # Добавление пира в серверный конфиг
+            echo "" >> "${AWG_DIR}/awg0.conf"
+            echo "# Client $i" >> "${AWG_DIR}/awg0.conf"
+            echo "[Peer]" >> "${AWG_DIR}/awg0.conf"
+            echo "PublicKey = $c_pub" >> "${AWG_DIR}/awg0.conf"
+            echo "PresharedKey = $c_psk" >> "${AWG_DIR}/awg0.conf"
+            echo "AllowedIPs = $client_ip/32" >> "${AWG_DIR}/awg0.conf"
+
+            # Создание клиентского файла
+            cat > "${AWG_DIR}/clients/amnezia-client${i}.conf" <<EOF
 [Interface]
-PrivateKey = $client_private_key
-Address = 10.8.0.2/24
-DNS = 1.1.1.1
-J1 = $(grep "^J1" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
-J2 = $(grep "^J2" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
-S1 = $(grep "^S1" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
-S2 = $(grep "^S2" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
-H1 = $(grep "^H1" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
-H2 = $(grep "^H2" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
-H3 = $(grep "^H3" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
-H4 = $(grep "^H4" "${AMN_DIR}/amneziawg.conf" | cut -d' ' -f3)
+Address = $client_ip/32
+PrivateKey = $c_priv
+DNS = 1.1.1.1, 8.8.8.8
+Jc = $jc
+Jmin = $jmin
+Jmax = $jmax
+S1 = $s1
+S2 = $s2
+H1 = $h1
+H2 = $h2
+H3 = $h3
+H4 = $h4
 
+# Peer Name: Server
 [Peer]
 PublicKey = $public_key
-Endpoint = $DOMAIN:${PORT_AMNEZIA:-51820}
+PresharedKey = $c_psk
+Endpoint = ${endpoint}:$PORT
 AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
 EOF
+        done
 
-    chmod 600 "${AMN_DIR}/amnezia_client.conf"
-
-    # Копируем конфиг в домашнюю директорию администратора для удобного получения по SSH
-    if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
-        cp "${AMN_DIR}/amnezia_client.conf" "/home/${NEW_USER}/amnezia_client.conf"
-        chown "${NEW_USER}:${NEW_USER}" "/home/${NEW_USER}/amnezia_client.conf"
-        chmod 600 "/home/${NEW_USER}/amnezia_client.conf"
+        log "Запуск службы awg-quick@awg0..."
+        systemctl enable awg-quick@awg0
+        systemctl restart awg-quick@awg0 || { umask "$old_umask"; error "Ошибка при запуске интерфейса awg0"; return 1; }
     fi
 
-    echo ""
-    echo "====== amnezia_client.conf (base64) ======"
-    base64 "${AMN_DIR}/amnezia_client.conf"
-    echo "==========================================="
+    # Защита от симлинк-атаки (Local Privilege Escalation)
+    if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]] && [[ -f "${AWG_DIR}/clients/amnezia-client1.conf" ]]; then
+        rm -f "/home/${NEW_USER}/amnezia_client1.conf" # Удаляем симлинк, если он был создан злоумышленником
+        cp "${AWG_DIR}/clients/amnezia-client1.conf" "/home/${NEW_USER}/amnezia_client1.conf"
+        chown "${NEW_USER}:${NEW_USER}" "/home/${NEW_USER}/amnezia_client1.conf"
+    fi
 
-    firewall_allow "${PORT_AMNEZIA:-51820}" udp
-    success "AmneziaWG успешно настроен на базе образа ${working_image}."
+    # Ключи удалены из Base64 вывода для предотвращения утечек в логи Ansible/Terraform
+
+    firewall_allow "$PORT" udp
+    umask "$old_umask"
+    success "AmneziaWG успешно установлен/проверен нативно (Kernel Module)."
 }
