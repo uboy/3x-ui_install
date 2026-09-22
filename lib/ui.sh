@@ -282,7 +282,7 @@ ui_get_ports() {
     [[ "${INSTALL_AMNEZIA:-false}" == "true" ]] && {
         _labels+=("Порт AmneziaWG (UDP):")
         _vars+=(PORT_AMNEZIA)
-        _defaults+=("${PORT_AMNEZIA:-51820}")
+        _defaults+=("${PORT_AMNEZIA:-39442}")
     }
     [[ "${INSTALL_DUMBPROXY:-false}" == "true" ]] && {
         _labels+=("Порт Dumbproxy (TCP):")
@@ -457,7 +457,7 @@ ui_final_report() {
     report="${report}Порт VLESS Reality: ${PORT_XUI_REALITY:-443}\n"
     report="${report}Порт OpenVPN: ${PORT_OPENVPN:-1194}\n"
     report="${report}Порт OpenConnect: ${PORT_OPENCONNECT:-4443}\n"
-    report="${report}Порт AmneziaWG: ${PORT_AMNEZIA:-51820}\n"
+    report="${report}Порт AmneziaWG: ${PORT_AMNEZIA:-39442}\n"
     report="${report}Порт Dumbproxy: ${PORT_DUMBPROXY:-8080}\n"
     report="${report}Порт MTProto: ${PORT_MTPROXY:-8443}\n\n"
 
@@ -512,7 +512,7 @@ ui_final_report() {
 
     if [[ "$INSTALL_AMNEZIA" == "true" ]]; then
         report="${report}${BLUE}${BOLD}--- AmneziaWG ---${NC}\n"
-        report="${report}Endpoint: ${DOMAIN}:${PORT_AMNEZIA:-51820}/udp\n"
+        report="${report}Endpoint: ${DOMAIN}:${PORT_AMNEZIA:-39442}/udp\n"
         report="${report}Конфиг клиента: /opt/amnezia/amnezia_client.conf\n"
         if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
             report="${report}Копия (SSH): /home/${NEW_USER}/amnezia_client.conf\n"

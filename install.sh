@@ -98,7 +98,7 @@ main() {
   resolve_var PORT_XUI_REALITY   "443"
   resolve_var PORT_OPENVPN       "1194"
   resolve_var PORT_OPENCONNECT   "4443"
-  resolve_var PORT_AMNEZIA       "51820"
+  resolve_var PORT_AMNEZIA       "39442"
   resolve_var PORT_DUMBPROXY     "8080"
   resolve_var PORT_MTPROXY       "8443"
   resolve_var PORT_MTPROXY_STATS "8888"
@@ -136,7 +136,7 @@ main() {
   }
   [[ "${INSTALL_OPENVPN:-false}" == "true" ]] && USED_PORTS["${PORT_OPENVPN:-1194}"]="OpenVPN"
   [[ "${INSTALL_OPENCONNECT:-false}" == "true" ]] && USED_PORTS["${PORT_OPENCONNECT:-4443}"]="OpenConnect"
-  [[ "${INSTALL_AMNEZIA:-false}" == "true" ]] && USED_PORTS["${PORT_AMNEZIA:-51820}"]="AmneziaWG"
+  [[ "${INSTALL_AMNEZIA:-false}" == "true" ]] && USED_PORTS["${PORT_AMNEZIA:-39442}"]="AmneziaWG"
   [[ "${INSTALL_DUMBPROXY:-false}" == "true" ]] && USED_PORTS["${PORT_DUMBPROXY:-8080}"]="Dumbproxy"
   if [[ "${INSTALL_MTPROXY:-false}" == "true" ]]; then
     if [[ -n "${USED_PORTS[$PORT_MTPROXY]:-}" ]] || ! check_port_free "$PORT_MTPROXY"; then

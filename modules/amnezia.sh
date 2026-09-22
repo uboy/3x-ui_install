@@ -32,7 +32,7 @@ module_amnezia_install() {
     mkdir -p "$AWG_DIR"
     mkdir -p "${AWG_DIR}/clients"
 
-    local PORT=${PORT_AMNEZIA:-51820}
+    local PORT=${PORT_AMNEZIA:-39442}
 
     if [[ -f "${AWG_DIR}/awg0.conf" ]]; then
         log "Конфигурация AmneziaWG уже существует (${AWG_DIR}/awg0.conf), пропускаем генерацию."

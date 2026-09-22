@@ -6,7 +6,7 @@
 - **3x-ui Panel**: Удобное управление Xray (VLESS, Trojan, Reality).
 - **OpenVPN**: Классический VPN (UDP/1194).
 - **OpenConnect (ocserv)**: Имитация Cisco AnyConnect (TCP/4443).
-- **AmneziaWG**: Современный протокол с защитой от DPI (UDP/51820).
+- **AmneziaWG**: Современный протокол с защитой от DPI (UDP/39442).
 - **MTProto**: Telegram-native прокси для обхода блокировок (TCP/8443 по умолчанию, Reality остаётся на 443).
 - **Dumbproxy**: HTTP/HTTPS прокси-сервер с авторизацией.
 - **Security Hardening**: Автоматическая настройка SSH, Fail2Ban и UFW.
