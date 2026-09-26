@@ -112,7 +112,7 @@ EOF
 [Interface]
 Address = $client_ip/32
 PrivateKey = $c_priv
-DNS = 1.1.1.1, 8.8.8.8
+DNS = 10.99.0.1, 1.1.1.1
 Jc = $jc
 Jmin = $jmin
 Jmax = $jmax

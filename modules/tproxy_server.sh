@@ -26,6 +26,10 @@ module_tproxy_server_install() {
         systemctl restart dumbproxy
     fi
 
+    local srv_ip
+    srv_ip=$(curl -fsSL --max-time 5 ifconfig.me || curl -fsSL --max-time 5 api.ipify.org || true)
+    srv_ip=$(echo "$srv_ip" | tr -d '\r\n')
+
     log "Настройка HAProxy..."
     cat > /etc/haproxy/haproxy.cfg <<EOF
 global
@@ -55,7 +59,7 @@ frontend port443
     tcp-request content accept if { req.len gt 0 }
 
     # Loop prevention for local/internal connections
-    use_backend backend_tproxy if { src 127.0.0.1 ::1 }
+    use_backend backend_tproxy if { src 127.0.0.1 ::1 ${srv_ip} }
 
     # Telegram WebProxy: match SNI or ALPN without SNI (Telegram Desktop client)
     use_backend backend_tproxy if { req_ssl_sni -i ${tp_domain} }
