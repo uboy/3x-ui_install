@@ -64,6 +64,7 @@ frontend port443
     # Telegram WebProxy: match SNI or ALPN without SNI (Telegram Desktop client)
     use_backend backend_tproxy if { req_ssl_sni -i ${tp_domain} }
     use_backend backend_tproxy if { req_ssl_hello_type 1 } !{ req_ssl_sni -m found } { req.ssl_alpn -m found }
+EOF
 
     # Dumbproxy routing: if dedicated domain is provided, match SNI and fallback to tproxy (prevents scanner ACME rate-limits)
     if [[ -n "${DOMAIN:-}" ]] && [[ "${DOMAIN:-}" != "${tp_domain}" ]]; then
