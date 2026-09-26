@@ -55,7 +55,7 @@ frontend port443
     tcp-request content accept if { req.len gt 0 }
 
     # Loop prevention for local/internal connections
-    use_backend backend_tproxy if { src 127.0.0.1 }
+    use_backend backend_tproxy if { src 127.0.0.1 ::1 }
 
     # Telegram WebProxy: match SNI or ALPN without SNI (Telegram Desktop client)
     use_backend backend_tproxy if { req_ssl_sni -i ${tp_domain} }
@@ -95,7 +95,7 @@ EOF
     mkdir -p "$inst_dir"
     git clone https://github.com/telegramdesktop/tproxy-server.git "$inst_dir"
     
-    cd "$inst_dir"
+    pushd "$inst_dir" >/dev/null
     
     # Отключаем go test, так как он иногда падает из-за строгих проверок прав в системе
     sed -i 's/.*go_binary.*test.*/true/g' deploy/install.sh
@@ -143,6 +143,10 @@ EOF
     # Запускаем установку
     chmod +x deploy/install.sh
     ./deploy/install.sh --hostname "$tp_domain" --email "admin@${tp_domain}" --site-dir /var/www/tproxy-site --secret "$tp_secret"
+    popd >/dev/null
+    rm -rf "$inst_dir"
+
+    firewall_allow 443 tcp
 
     success "WEB-прокси для Telegram успешно установлен!"
     success "Параметры для Telegram:"
