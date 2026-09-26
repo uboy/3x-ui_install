@@ -34,8 +34,8 @@ ui_port_reusable_for_selected_service() {
             port_in_use_by_pattern "$port" "ocserv" || return 1
             ;;
         PORT_AMNEZIA)
-            docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^amneziawg$" || return 1
-            port_in_use_by_pattern "$port" "docker-proxy|dockerd|amneziawg" udp
+            (systemctl is-active --quiet awg-quick@awg0 2>/dev/null || [[ -f /etc/amnezia/amneziawg/awg0.conf ]]) || return 1
+            port_in_use_by_pattern "$port" "awg" udp
             ;;
         PORT_DUMBPROXY)
             (systemctl is-active --quiet dumbproxy 2>/dev/null || [[ -x /usr/local/bin/dumbproxy ]]) || return 1

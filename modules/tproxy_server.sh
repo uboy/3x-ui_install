@@ -48,12 +48,20 @@ defaults
     timeout server  5m
 
 frontend port443
-    bind *:443
+    bind :::443 v4v6
     mode tcp
     tcp-request inspect-delay 5s
     tcp-request content accept if { req_ssl_hello_type 1 }
+    tcp-request content accept if { req.len gt 0 }
 
+    # Loop prevention for local/internal connections
+    use_backend backend_tproxy if { src 127.0.0.1 }
+
+    # Telegram WebProxy: match SNI or ALPN without SNI (Telegram Desktop client)
     use_backend backend_tproxy if { req_ssl_sni -i ${tp_domain} }
+    use_backend backend_tproxy if { req_ssl_hello_type 1 } !{ req_ssl_sni -m found } { req.ssl_alpn -m found }
+
+    # Fallback to Dumbproxy
     default_backend backend_dumbproxy
 
 backend backend_tproxy
