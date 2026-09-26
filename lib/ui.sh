@@ -34,8 +34,8 @@ ui_port_reusable_for_selected_service() {
             port_in_use_by_pattern "$port" "ocserv" || return 1
             ;;
         PORT_AMNEZIA)
-            docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^amneziawg$" || return 1
-            port_in_use_by_pattern "$port" "docker-proxy|dockerd|amneziawg" udp
+            (systemctl is-active --quiet awg-quick@awg0 2>/dev/null || [[ -f /etc/amnezia/amneziawg/awg0.conf ]]) || return 1
+            [[ "$(awg show awg0 listen-port 2>/dev/null)" == "$port" ]]
             ;;
         PORT_DUMBPROXY)
             (systemctl is-active --quiet dumbproxy 2>/dev/null || [[ -x /usr/local/bin/dumbproxy ]]) || return 1
@@ -513,9 +513,9 @@ ui_final_report() {
     if [[ "$INSTALL_AMNEZIA" == "true" ]]; then
         report="${report}${BLUE}${BOLD}--- AmneziaWG ---${NC}\n"
         report="${report}Endpoint: ${DOMAIN}:${PORT_AMNEZIA:-39442}/udp\n"
-        report="${report}Конфиг клиента: /opt/amnezia/amnezia_client.conf\n"
+        report="${report}Конфиг клиента: /etc/amnezia/amneziawg/clients/amnezia-client1.conf\n"
         if [[ -n "${NEW_USER:-}" ]] && [[ -d "/home/${NEW_USER}" ]]; then
-            report="${report}Копия (SSH): /home/${NEW_USER}/amnezia_client.conf\n"
+            report="${report}Копия (SSH): /home/${NEW_USER}/amnezia_client1.conf\n"
         fi
         report="${report}\n"
     elif [[ "$INSTALL_AMNEZIA" == "skipped" ]]; then

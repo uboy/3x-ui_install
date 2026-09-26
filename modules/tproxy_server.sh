@@ -26,6 +26,10 @@ module_tproxy_server_install() {
         systemctl restart dumbproxy
     fi
 
+    local srv_ip
+    srv_ip=$(curl -fsSL --max-time 5 ifconfig.me || curl -fsSL --max-time 5 api.ipify.org || true)
+    srv_ip=$(echo "$srv_ip" | tr -d '\r\n')
+
     log "Настройка HAProxy..."
     cat > /etc/haproxy/haproxy.cfg <<EOF
 global
@@ -48,13 +52,32 @@ defaults
     timeout server  5m
 
 frontend port443
-    bind *:443
+    bind :::443 v4v6
     mode tcp
     tcp-request inspect-delay 5s
     tcp-request content accept if { req_ssl_hello_type 1 }
+    tcp-request content accept if { req.len gt 0 }
 
+    # Loop prevention for local/internal connections
+    use_backend backend_tproxy if { src 127.0.0.1 ::1 ${srv_ip} }
+
+    # Telegram WebProxy: match SNI or ALPN without SNI (Telegram Desktop client)
     use_backend backend_tproxy if { req_ssl_sni -i ${tp_domain} }
+    use_backend backend_tproxy if { req_ssl_hello_type 1 } !{ req_ssl_sni -m found } { req.ssl_alpn -m found }
+
+    # Dumbproxy routing: if dedicated domain is provided, match SNI and fallback to tproxy (prevents scanner ACME rate-limits)
+    if [[ -n "${DOMAIN:-}" ]] && [[ "${DOMAIN:-}" != "${tp_domain}" ]]; then
+        cat >> /etc/haproxy/haproxy.cfg <<EOF
+    use_backend backend_dumbproxy if { req_ssl_sni -i ${DOMAIN} }
+    default_backend backend_tproxy
+EOF
+    else
+        cat >> /etc/haproxy/haproxy.cfg <<EOF
     default_backend backend_dumbproxy
+EOF
+    fi
+
+    cat >> /etc/haproxy/haproxy.cfg <<EOF
 
 backend backend_tproxy
     mode tcp
@@ -87,7 +110,7 @@ EOF
     mkdir -p "$inst_dir"
     git clone https://github.com/telegramdesktop/tproxy-server.git "$inst_dir"
     
-    cd "$inst_dir"
+    pushd "$inst_dir" >/dev/null
     
     # Отключаем go test, так как он иногда падает из-за строгих проверок прав в системе
     sed -i 's/.*go_binary.*test.*/true/g' deploy/install.sh
@@ -135,6 +158,10 @@ EOF
     # Запускаем установку
     chmod +x deploy/install.sh
     ./deploy/install.sh --hostname "$tp_domain" --email "admin@${tp_domain}" --site-dir /var/www/tproxy-site --secret "$tp_secret"
+    popd >/dev/null
+    rm -rf "$inst_dir"
+
+    firewall_allow 443 tcp
 
     success "WEB-прокси для Telegram успешно установлен!"
     success "Параметры для Telegram:"
